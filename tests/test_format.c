@@ -56,7 +56,7 @@ int main(int argc,char **argv){
         h.capabilities=IFS_FS_HOST_READ_ONLY;h.write_at=NULL;h.flush=NULL;
         uint32_t variant=0;assert(c->probe(&h,&variant)==0&&variant==4);
         void *vol=NULL;IfsFsVolumeInfoV2 info={.structure_bytes=sizeof info};
-        assert(c->mount(&h,&vol,&info)==0&&info.free_bytes==d.bytes-(uint64_t)(inode_block+16u)*512);
+        assert(c->mount(&h,&vol,&info)==0&&info.free_bytes==d.bytes-(uint64_t)(inode_block+16u+512u)*512);
         char name[64];IfsFsEntryV2 e={.structure_bytes=sizeof e,.name=name,.name_capacity=sizeof name};
         assert(c->stat(vol,"/.inodes",&e)==0&&e.size_bytes==8192);
         assert(c->stat(vol,"/.boot",&e)==0&&!e.size_bytes);
@@ -64,7 +64,20 @@ int main(int argc,char **argv){
         assert(c->directory_entry(vol,"/",4,&e)==IFS_FS_END);
         uint64_t errors=99;assert(v->check(vol,0,&errors)==0&&!errors);
         assert(c->unmount(vol)==0);
-        printf("QNX4 native format PASS sector=%u\n",d.sector);
+        h.capabilities=IFS_FS_HOST_EXCLUSIVE|IFS_FS_HOST_DURABLE;h.write_at=wr;h.flush=fl;
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(c->create(vol,"/folder",IFS_FS_ENTRY_DIRECTORY)==0);
+        assert(c->create(vol,"/folder/native-long-file-name.bin",IFS_FS_ENTRY_FILE)==0);
+        assert(c->create(vol,"/folder/native-long-file-name.bin",IFS_FS_ENTRY_FILE)==IFS_FS_EXISTS);
+        assert(c->create(vol,"/.ifs-journal",IFS_FS_ENTRY_FILE)==IFS_FS_ACCESS);
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0);
+        h.capabilities=IFS_FS_HOST_READ_ONLY;h.write_at=NULL;h.flush=NULL;
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(c->stat(vol,"/folder/native-long-file-name.bin",&e)==0&&!e.size_bytes);
+        assert(c->stat(vol,"/.ifs-journal",&e)==IFS_FS_NOT_FOUND);
+        assert(c->unmount(vol)==0);
+        printf("QNX4 native format and journalled creation PASS sector=%u\n",d.sector);
     }
     assert(close(d.fd)==0);dlclose(so);return 0;
 }

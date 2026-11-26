@@ -14,15 +14,18 @@ typedef struct {uint32_t first,count;} Run;
 typedef struct {uint8_t raw[REC];uint64_t identity;} Node;
 typedef struct {Run *run;uint32_t count;} Map;
 typedef struct {IfsFsHostRuntimeV2 host;uint32_t blocks;uint8_t *bitmap;
-    Node root,inodes;Map inode_map;uint64_t free;uintptr_t token;} Session;
+    Node root,inodes;Map inode_map;uint64_t free;uintptr_t token;
+    int journal_owned,writable,fault;uint64_t recovered;} Session;
 static Session active;
 static uintptr_t generation;
 static atomic_flag gate=ATOMIC_FLAG_INIT;
 static int enter(void){return !atomic_flag_test_and_set_explicit(&gate,memory_order_acquire);}
 static int leave(int rc){atomic_flag_clear_explicit(&gate,memory_order_release);return rc;}
-static int live(void *v){return v&&(uintptr_t)v==active.token;}
+static int live(void *v){return v&&(uintptr_t)v==active.token&&!active.fault;}
 static uint32_t le16(const uint8_t *p){return p[0]|(uint32_t)p[1]<<8;}
 static uint32_t le32(const uint8_t *p){return le16(p)|le16(p+2)<<16;}
+static void put16(uint8_t *p,uint32_t n){p[0]=(uint8_t)n;p[1]=(uint8_t)(n>>8);}
+static void put32(uint8_t *p,uint32_t n){put16(p,n);put16(p+2,n>>16);}
 static uint32_t size(const Node *n){return le32(n->raw+16);}
 static uint32_t mode(const Node *n){return le16(n->raw+50)&0170000u;}
 static int cancelled(const Session *s){return s->host.cancelled&&s->host.cancelled(s->host.context);}
@@ -192,6 +195,7 @@ static int directory_entry(const Session *s,const Node *dir,const char *name,uin
         Entry candidate;rc=decode_entry(s,dir,&m,at,p,&candidate);
         if(rc==IFS_FS_NOT_FOUND||rc==IFS_FS_END){rc=0;continue;}
         if(rc)goto done;
+        if(s->journal_owned&&dir->identity==BB&&!strcmp(candidate.name,".ifs-journal"))continue;
         int match=name?candidate.length==len&&!memcmp(candidate.name,name,len):visible==index;
         ++visible;
         if(!match)continue;
@@ -258,6 +262,8 @@ static int discover(const IfsFsHostRuntimeV2 *h,Session *s)
 fail:
     session_drop(s);return rc;
 }
+#include "journal.h"
+static int check_native(Session *s);
 static int probe(const IfsFsHostRuntimeV2 *h,uint32_t *variant)
 {
     if(!variant)return IFS_FS_INVALID;
@@ -274,11 +280,30 @@ static int mount_impl(const IfsFsHostRuntimeV2 *h,void **v,IfsFsVolumeInfoV2 *o)
     if(!v||!o||o->structure_bytes<sizeof *o)return IFS_FS_INVALID;
     *v=NULL;if(active.token||generation==UINTPTR_MAX)return IFS_FS_BUSY;
     if(!ifs_fs_host_v2_valid(h))return IFS_FS_INVALID;
-    if(!(h->capabilities&IFS_FS_HOST_READ_ONLY))return IFS_FS_ACCESS;
+    int writable=!(h->capabilities&IFS_FS_HOST_READ_ONLY),owned=0;
+    uint64_t recovered=0;
+    if(journal_supported(h)){
+        Journal j;int jr=journal_load(h,&j);
+        uint8_t owner[REC];
+        int rc=ifs_fs_host_read_bytes_v2(h,journal_owner_offset(h),owner,REC);
+        if(rc)return rc;
+        owned=journal_owner_valid(h,owner);
+        if(!jr&&j.count){
+            /* Validate the staged root and journal owner before touching
+             * any home block, even when the primary is unreadable. */
+            if(!writable)return owned?IFS_FS_BUSY:IFS_FS_CORRUPT;
+            rc=journal_replay(h,&j);if(rc)return rc;
+            owned=1;recovered=1;
+        }else if(owned&&jr)return jr==IFS_FS_NOT_FOUND?IFS_FS_CORRUPT:jr;
+        else if(!owned&&!jr)return IFS_FS_CORRUPT;
+    }
+    if(writable&&!owned)return IFS_FS_ACCESS;
     int rc=discover(h,&active);if(rc)return rc;
+    active.journal_owned=owned;active.writable=writable;active.recovered=recovered;
+    if(writable){rc=check_native(&active);if(rc){session_drop(&active);return rc;}}
     active.token=++generation;*v=(void*)active.token;info(&active,o);return IFS_FS_OK;
 }
-static int unmount_impl(void *v){if(!live(v))return IFS_FS_INVALID;session_drop(&active);return IFS_FS_OK;}
+static int unmount_impl(void *v){if(!v||(uintptr_t)v!=active.token)return IFS_FS_INVALID;session_drop(&active);return IFS_FS_OK;}
 static int resolve(const char *path,Entry *e)
 {
     if(!path||*path!='/')return IFS_FS_INVALID;
@@ -351,6 +376,16 @@ static int allocation_impl(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_
 }
 #include "check.h"
 #include "format.h"
+#include "mutation.h"
+static int recover_impl(void *v,uint32_t flags,uint64_t *n)
+{
+    if(!n)return IFS_FS_INVALID;
+    *n=0;if(!live(v)||flags)return IFS_FS_INVALID;
+    if(!active.writable)return IFS_FS_ACCESS;
+    *n=active.recovered;active.recovered=0;return IFS_FS_OK;
+}
+static int sync_impl(void *v)
+{if(!live(v))return IFS_FS_INVALID;return active.writable?jflush(&active.host):IFS_FS_OK;}
 static int query_impl(void *v,IfsFsVolumeInfoV2 *o)
 {if(!live(v)||!o||o->structure_bytes<sizeof *o)return IFS_FS_INVALID;info(&active,o);return IFS_FS_OK;}
 #define WRAP(name,args,call) static int name args {if(!enter())return IFS_FS_BUSY;return leave(call);}
@@ -364,11 +399,14 @@ WRAP(allocation_map,(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_t c,ui
 WRAP(query,(void *v,IfsFsVolumeInfoV2 *o),query_impl(v,o))
 WRAP(format,(const IfsFsHostRuntimeV2 *h,uint32_t variant,const char *label,uint32_t flags),format_impl(h,variant,label,flags))
 WRAP(check,(void *v,uint32_t flags,uint64_t *errors),check_impl(v,flags,errors))
-static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ},
-.probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path};
-static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT|IFS_FS_VOLUME_CHECK},.query=query,.format=format,.check=check};
+WRAP(create_path,(void *v,const char *p,uint32_t type),create_impl(v,p,type))
+WRAP(recover,(void *v,uint32_t flags,uint64_t *n),recover_impl(v,flags,n))
+WRAP(sync_volume,(void *v),sync_impl(v))
+static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ|IFS_FS_CORE_CREATE},
+.probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path,.create=create_path};
+static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT|IFS_FS_VOLUME_CHECK|IFS_FS_VOLUME_SYNC},.query=query,.format=format,.check=check,.sync=sync_volume};
 static const IfsFsFormatProfileOpsV2 profile={.header={2,sizeof profile,IFS_FS_GROUP_FORMAT_PROFILE,0,IFS_FS_FORMAT_PROFILE_DEFAULT},.get_default=format_profile};
-static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_MAP},.map=map_path};
+static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_MAP|IFS_FS_DEFRAG_RECOVER},.map=map_path,.recover=recover};
 static const IfsFsAllocationOpsV2 allocation={.header={2,sizeof allocation,IFS_FS_GROUP_ALLOCATION,0,IFS_FS_ALLOCATION_MAP},.map=allocation_map};
 static const IfsFsGroupHeaderV2 *group(uint32_t id,uint32_t lo,uint32_t hi)
 {

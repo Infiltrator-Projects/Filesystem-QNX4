@@ -54,7 +54,7 @@ int main(int argc,char **argv){
     const IfsFsVolumeOpsV2 *volume=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_VOLUME);
     const IfsFsDefragOpsV2 *m=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_DEFRAG);
     const IfsFsAllocationOpsV2 *a=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_ALLOCATION);
-    assert(!c->create&&!c->write&&!m->execute);
+    assert(c->create&&!c->write&&!m->execute);
     Disk d;for(d.sector=512;d.sector<=4096;d.sector*=8){
         fixture(&d);
         IfsFsHostRuntimeV2 h={.abi_version=2,.structure_bytes=sizeof h,.capabilities=IFS_FS_HOST_READ_ONLY,
