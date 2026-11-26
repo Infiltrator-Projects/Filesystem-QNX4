@@ -36,3 +36,7 @@ Independent QNX4 media, invalid inode pointers, malformed extents and allocation
 - [Common ABI](https://github.com/Infiltrator-Projects/Libraries)
 
 Preserve inherited notices and licences on source extraction; new project-authored code uses GPL-3.0-or-later. The [technical reference](docs/QNX4-TECHNICAL-REFERENCE.md) expands original-format research. The PDF includes both earlier documents as historical appendices; installation remains pending. Central code or test results are not evidence of an independent provider.
+
+## Development implementation 0.1.0
+
+A native hosted read-only Common V2 reader now implements root/bitmap discovery, direct and extended extents, directory and inode-file links, file reads, physical maps and allocation maps. Synthetic structure and corruption tests cover both 512 and 4096 byte host sectors. Independent media, full integrity reconciliation, writable operations, recovery, relocation, formatter, freestanding profile and publication remain outstanding. No unsupported mutation capability is advertised.
