@@ -51,6 +51,7 @@ int main(int argc,char **argv){
     void *sym=dlsym(so,IFS_FS_COMMON_EXPORT_V2);assert(sym);IfsFsModuleApiEntryV2 fn=NULL;memcpy(&fn,&sym,sizeof fn);
     const IfsFsModuleApiV2 *api=fn();assert(ifs_fs_api_v2_valid(api,"qnx4"));
     const IfsFsCoreOpsV2 *c=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_CORE);
+    const IfsFsVolumeOpsV2 *volume=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_VOLUME);
     const IfsFsDefragOpsV2 *m=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_DEFRAG);
     const IfsFsAllocationOpsV2 *a=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_ALLOCATION);
     assert(!c->create&&!c->write&&!m->execute);
@@ -79,6 +80,18 @@ int main(int argc,char **argv){
             at=next;
         }
         assert(at==SIZE&&!unknown&&free_bytes==info.free_bytes);
+        uint64_t errors=99;
+        assert(volume->check(v,0,&errors)==0&&!errors);
+        /* Distinct direct inode references the long file's data block. */
+        p32(d.data+1536+256+20,6);
+        assert(volume->check(v,0,&errors)==0&&errors);
+        p32(d.data+1536+256+20,9);
+        used(&d,10);assert(volume->check(v,0,&errors)==0&&errors);
+        d.data[1024+10/8]&=(uint8_t)~(1u<<(10%8));
+        p16(d.data+2048+64+56,2);
+        assert(volume->check(v,0,&errors)==0&&errors);
+        p16(d.data+2048+64+56,1);
+        assert(volume->check(v,0,&errors)==0&&!errors);
         d.data[7*512+496]='X';assert(c->read(v,"/a-long-native-filename.bin",0,buf,1)==IFS_FS_CORRUPT);
         d.data[7*512+496]='I';p32(d.data+7*512,8);assert(c->read(v,"/a-long-native-filename.bin",0,buf,1)==IFS_FS_CORRUPT);
         p32(d.data+7*512,0);d.data[1536+192+52]=8;

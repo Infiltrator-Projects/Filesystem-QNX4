@@ -62,6 +62,7 @@ int main(int argc,char **argv){
         assert(c->stat(vol,"/.boot",&e)==0&&!e.size_bytes);
         assert(c->stat(vol,"/.altboot",&e)==0&&!e.size_bytes);
         assert(c->directory_entry(vol,"/",4,&e)==IFS_FS_END);
+        uint64_t errors=99;assert(v->check(vol,0,&errors)==0&&!errors);
         assert(c->unmount(vol)==0);
         printf("QNX4 native format PASS sector=%u\n",d.sector);
     }

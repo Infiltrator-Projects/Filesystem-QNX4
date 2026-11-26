@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <stdlib.h>
 enum { BB=512,REC=64,USED=1,LINK=8,INODE=16,BUSY=4,REG=0100000,DIR=0040000 };
 typedef struct {uint32_t first,count;} Run;
 typedef struct {uint8_t raw[REC];uint64_t identity;} Node;
@@ -65,7 +66,7 @@ static int add_extent(const Session *s,Map *m,uint8_t *seen,const uint8_t *p,uin
 /* The first extent is in the inode. Extension blocks are metadata,
  * checked independently of payload ownership, including reverse links.
  * A single seen bitmap detects both cycles and crosslinked local runs. */
-static int node_map(const Session *s,const Node *n,Map *m)
+static int node_map_claim(const Session *s,const Node *n,Map *m,uint8_t *global)
 {
     *m=(Map){0};
     uint32_t count=le16(n->raw+48),next=le32(n->raw+28);
@@ -74,10 +75,10 @@ static int node_map(const Session *s,const Node *n,Map *m)
     if(count>s->blocks||count>needed)return IFS_FS_CORRUPT;
     m->run=alloc(s,(size_t)count*sizeof(Run));
     size_t bytes=(size_t)(((uint64_t)s->blocks+7u)/8u);
-    uint8_t *seen=alloc(s,bytes);
+    uint8_t *seen=global?global:alloc(s,bytes);
     int rc=IFS_FS_NO_MEMORY;
     if(!m->run||!seen)goto done;
-    memset(seen,0,bytes);
+    if(!global)memset(seen,0,bytes);
     rc=add_extent(s,m,seen,n->raw+20,&total);if(rc)goto done;
     uint32_t prev=0;
     while(m->count<count){
@@ -99,8 +100,12 @@ static int node_map(const Session *s,const Node *n,Map *m)
     if(next||total<needed){rc=IFS_FS_CORRUPT;goto done;}
     rc=IFS_FS_OK;
 done:
-    drop(s,seen);if(rc)map_drop(s,m);return rc;
+    if(!global)drop(s,seen);
+    if(rc)map_drop(s,m);
+    return rc;
 }
+static int node_map(const Session *s,const Node *n,Map *m)
+{return node_map_claim(s,n,m,NULL);}
 static int map_read(const Session *s,const Map *m,uint64_t offset,void *p,uint32_t length)
 {
     uint8_t *out=p;
@@ -146,6 +151,36 @@ static int inode_location(const Session *s,uint32_t address,uint8_t slot,uint64_
     return IFS_FS_CORRUPT;
 }
 typedef struct {Node node;char name[49];uint32_t length;} Entry;
+static int decode_entry(const Session *s,const Node *dir,const Map *m,uint64_t at,
+                        const uint8_t p[REC],Entry *out)
+{
+    unsigned status=p[63];
+    if(!p[0]||!(status&(USED|LINK)))return IFS_FS_NOT_FOUND;
+    if((status&(USED|LINK))==(USED|LINK)||status&BUSY)return IFS_FS_CORRUPT;
+    unsigned width=(status&LINK)?48u:16u,n=0;
+    while(n<width&&p[n]){if(p[n]=='/')return IFS_FS_CORRUPT;++n;}
+    *out=(Entry){.length=n};memcpy(out->name,p,n);
+    if(name_is(p,width,".")||name_is(p,width,".."))return IFS_FS_END;
+    int rc;
+    if(status&LINK){
+        uint32_t address=le32(p+48);uint8_t slot=p[52];
+        int special=dir->identity==BB&&address==2u&&
+            ((slot==1u&&name_is(p,width,".inodes"))||
+             (slot==2u&&name_is(p,width,".boot"))||
+             (slot==3u&&name_is(p,width,".altboot")));
+        if(special)out->node.identity=BB+slot*REC;
+        else {
+            rc=inode_location(s,address,slot,&out->node.identity);
+            if(rc)return rc;
+        }
+        rc=rd(s,out->node.identity,out->node.raw,REC);if(rc)return rc;
+        if(!special&&!(out->node.raw[63]&INODE))return IFS_FS_CORRUPT;
+    }else{
+        memcpy(out->node.raw,p,REC);
+        rc=map_address(m,at,&out->node.identity);if(rc)return rc;
+    }
+    return node_valid(&out->node);
+}
 static int directory_entry(const Session *s,const Node *dir,const char *name,uint32_t len,uint32_t index,Entry *out)
 {
     if(mode(dir)!=DIR)return IFS_FS_INVALID;
@@ -154,37 +189,14 @@ static int directory_entry(const Session *s,const Node *dir,const char *name,uin
     for(uint64_t at=0;at<size(dir);at+=REC){
         if(cancelled(s)){rc=IFS_FS_BUSY;goto done;}
         uint8_t p[REC];rc=map_read(s,&m,at,p,REC);if(rc)goto done;
-        unsigned status=p[63];
-        if(!p[0]||!(status&(USED|LINK)))continue;
-        if((status&(USED|LINK))==(USED|LINK)||status&BUSY){rc=IFS_FS_CORRUPT;goto done;}
-        unsigned width=(status&LINK)?48u:16u,n=0;
-        while(n<width&&p[n]){if(p[n]=='/'){rc=IFS_FS_CORRUPT;goto done;}++n;}
-        if(name_is(p,width,".")||name_is(p,width,".."))continue;
-        int match=name?n==len&&!memcmp(p,name,len):visible==index;
+        Entry candidate;rc=decode_entry(s,dir,&m,at,p,&candidate);
+        if(rc==IFS_FS_NOT_FOUND||rc==IFS_FS_END){rc=0;continue;}
+        if(rc)goto done;
+        int match=name?candidate.length==len&&!memcmp(candidate.name,name,len):visible==index;
         ++visible;
         if(!match)continue;
         if(found){rc=IFS_FS_CORRUPT;goto done;}
-        *out=(Entry){.length=n};memcpy(out->name,p,n);
-        if(status&LINK){
-            uint32_t address=le32(p+48);uint8_t slot=p[52];
-            /* Only the native reserved root aliases may reference root
-             * block inode records instead of the ordinary inode file. */
-            int special=dir->identity==BB&&address==2u&&
-                ((slot==1u&&name_is(p,width,".inodes"))||
-                 (slot==2u&&name_is(p,width,".boot"))||
-                 (slot==3u&&name_is(p,width,".altboot")));
-            if(special)out->node.identity=BB+slot*REC;
-            else {
-                rc=inode_location(s,address,slot,&out->node.identity);
-                if(rc)goto done;
-            }
-            rc=rd(s,out->node.identity,out->node.raw,REC);if(rc)goto done;
-            if(!special&&!(out->node.raw[63]&INODE)){rc=IFS_FS_CORRUPT;goto done;}
-        }else{
-            memcpy(out->node.raw,p,REC);
-            rc=map_address(&m,at,&out->node.identity);if(rc)goto done;
-        }
-        rc=node_valid(&out->node);if(rc)goto done;
+        *out=candidate;
         found=1;
     }
     rc=found?IFS_FS_OK:name?IFS_FS_NOT_FOUND:IFS_FS_END;
@@ -337,6 +349,7 @@ static int allocation_impl(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_
     }
     return *n?IFS_FS_OK:IFS_FS_END;
 }
+#include "check.h"
 #include "format.h"
 static int query_impl(void *v,IfsFsVolumeInfoV2 *o)
 {if(!live(v)||!o||o->structure_bytes<sizeof *o)return IFS_FS_INVALID;info(&active,o);return IFS_FS_OK;}
@@ -350,9 +363,10 @@ WRAP(map_path,(void *v,const char *p,uint64_t at,IfsFsExtentV2 *o,uint32_t c,uin
 WRAP(allocation_map,(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_t c,uint32_t *n),allocation_impl(v,at,o,c,n))
 WRAP(query,(void *v,IfsFsVolumeInfoV2 *o),query_impl(v,o))
 WRAP(format,(const IfsFsHostRuntimeV2 *h,uint32_t variant,const char *label,uint32_t flags),format_impl(h,variant,label,flags))
+WRAP(check,(void *v,uint32_t flags,uint64_t *errors),check_impl(v,flags,errors))
 static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ},
 .probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path};
-static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT},.query=query,.format=format};
+static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT|IFS_FS_VOLUME_CHECK},.query=query,.format=format,.check=check};
 static const IfsFsFormatProfileOpsV2 profile={.header={2,sizeof profile,IFS_FS_GROUP_FORMAT_PROFILE,0,IFS_FS_FORMAT_PROFILE_DEFAULT},.get_default=format_profile};
 static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_MAP},.map=map_path};
 static const IfsFsAllocationOpsV2 allocation={.header={2,sizeof allocation,IFS_FS_GROUP_ALLOCATION,0,IFS_FS_ALLOCATION_MAP},.map=allocation_map};
