@@ -40,3 +40,5 @@ Preserve inherited notices and licences on source extraction; new project-author
 ## Development implementation 0.1.0
 
 A native hosted read-only Common V2 reader now implements root/bitmap discovery, direct and extended extents, directory and inode-file links, file reads, physical maps and allocation maps. Synthetic structure and corruption tests cover both 512 and 4096 byte host sectors. Independent media, full integrity reconciliation, writable operations, recovery, relocation, formatter, freestanding profile and publication remain outstanding. No unsupported mutation capability is advertised.
+
+Version 0.1.1 adds the native nonbootable format and Common V2 format profile, root-block alias handling and the inode-file signature check. The formatter initialises the reserved bitmap, four-block directory and sixteen-block inode file, then publishes the root record after a durable barrier. Mount remains read-only. References: https://www.qnx.com/developers/docs/qnx_4.25_docs/qnx4/user_guide/recovery.html and https://codebrowser.dev/linux/linux/include/uapi/linux/qnx4_fs.h.html.

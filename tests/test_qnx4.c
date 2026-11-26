@@ -34,6 +34,7 @@ static void fixture(Disk *d){
     node(root+128,".bitmap",16,3,1,0100400,1);
     linknode(root+192,"a-long-native-filename.bin",5,1);
     node(root+256,"short",7,9,1,0100644,1);
+    memcpy(d->data+2048,"IamTHE.inodeFILE",16);
     uint8_t *ino=d->data+2048+64;
     node(ino,"inode",700,6,1,0100644,16);
     p16(ino+48,2);p32(ino+28,8);

@@ -88,7 +88,7 @@ static int node_map(const Session *s,const Node *n,Map *m)
         uint32_t entries=p[8];
         if(memcmp(p+496,"IamXblk",7)||le32(p+4)!=prev||
            !entries||entries>60u||entries>count-m->count||
-           memcmp(p+504,n->raw+20,8)){rc=IFS_FS_CORRUPT;goto done;}
+           (!prev&&memcmp(p+504,n->raw+20,8))){rc=IFS_FS_CORRUPT;goto done;}
         uint64_t subtotal=0;
         for(uint32_t i=0;i<entries;i++){
             rc=add_extent(s,m,seen,p+16+8*i,&subtotal);if(rc)goto done;
@@ -166,10 +166,20 @@ static int directory_entry(const Session *s,const Node *dir,const char *name,uin
         if(found){rc=IFS_FS_CORRUPT;goto done;}
         *out=(Entry){.length=n};memcpy(out->name,p,n);
         if(status&LINK){
-            rc=inode_location(s,le32(p+48),p[52],&out->node.identity);
-            if(rc)goto done;
+            uint32_t address=le32(p+48);uint8_t slot=p[52];
+            /* Only the native reserved root aliases may reference root
+             * block inode records instead of the ordinary inode file. */
+            int special=dir->identity==BB&&address==2u&&
+                ((slot==1u&&name_is(p,width,".inodes"))||
+                 (slot==2u&&name_is(p,width,".boot"))||
+                 (slot==3u&&name_is(p,width,".altboot")));
+            if(special)out->node.identity=BB+slot*REC;
+            else {
+                rc=inode_location(s,address,slot,&out->node.identity);
+                if(rc)goto done;
+            }
             rc=rd(s,out->node.identity,out->node.raw,REC);if(rc)goto done;
-            if(!(out->node.raw[63]&INODE)){rc=IFS_FS_CORRUPT;goto done;}
+            if(!special&&!(out->node.raw[63]&INODE)){rc=IFS_FS_CORRUPT;goto done;}
         }else{
             memcpy(out->node.raw,p,REC);
             rc=map_address(&m,at,&out->node.identity);if(rc)goto done;
@@ -203,6 +213,9 @@ static int discover(const IfsFsHostRuntimeV2 *h,Session *s)
        size(&s->inodes)<REC)return IFS_FS_CORRUPT;
     rc=node_valid(&s->inodes);if(rc)return rc;
     rc=node_map(s,&s->inodes,&s->inode_map);if(rc)goto fail;
+    uint8_t signature[16];
+    rc=map_read(s,&s->inode_map,0,signature,sizeof signature);if(rc)goto fail;
+    if(memcmp(signature,"IamTHE.inodeFILE",16)){rc=IFS_FS_CORRUPT;goto fail;}
     Entry bitmap;
     rc=directory_entry(s,&s->root,".bitmap",7,0,&bitmap);if(rc)goto fail;
     uint32_t bytes=(uint32_t)(((uint64_t)s->blocks+7u)/8u);
@@ -213,10 +226,18 @@ static int discover(const IfsFsHostRuntimeV2 *h,Session *s)
     if(rc){drop(s,bits);goto fail;}
     s->bitmap=bits;
     if(!bit(bits,0)||!bit(bits,1)){rc=IFS_FS_CORRUPT;goto fail;}
+    /* Reject bitmap padding that falsely advertises unavailable blocks. */
+    if(s->blocks%8u && (bits[bytes-1u]>>(s->blocks%8u))!=(255u>>(s->blocks%8u))){
+        rc=IFS_FS_CORRUPT;goto fail;
+    }
     Map verify={0};
     rc=node_map(s,&s->root,&verify);map_drop(s,&verify);if(rc)goto fail;
     rc=node_map(s,&s->inodes,&verify);map_drop(s,&verify);if(rc)goto fail;
-    rc=node_map(s,&bitmap.node,&verify);map_drop(s,&verify);if(rc)goto fail;
+    rc=node_map(s,&bitmap.node,&verify);
+    if(!rc && (verify.count!=1||verify.run[0].first!=2u||
+        verify.run[0].count!=(uint32_t)(((uint64_t)s->blocks+4095u)/4096u)))
+        rc=IFS_FS_CORRUPT;
+    map_drop(s,&verify);if(rc)goto fail;
     for(uint32_t b=0;b<s->blocks;b++){
         if((b&4095u)==0&&cancelled(s)){rc=IFS_FS_BUSY;goto fail;}
         if(!bit(bits,b))s->free+=BB;
@@ -316,6 +337,7 @@ static int allocation_impl(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_
     }
     return *n?IFS_FS_OK:IFS_FS_END;
 }
+#include "format.h"
 static int query_impl(void *v,IfsFsVolumeInfoV2 *o)
 {if(!live(v)||!o||o->structure_bytes<sizeof *o)return IFS_FS_INVALID;info(&active,o);return IFS_FS_OK;}
 #define WRAP(name,args,call) static int name args {if(!enter())return IFS_FS_BUSY;return leave(call);}
@@ -327,9 +349,11 @@ WRAP(read_path,(void *v,const char *p,uint64_t at,void *b,uint32_t n),read_impl(
 WRAP(map_path,(void *v,const char *p,uint64_t at,IfsFsExtentV2 *o,uint32_t c,uint32_t *n),map_impl(v,p,at,o,c,n))
 WRAP(allocation_map,(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_t c,uint32_t *n),allocation_impl(v,at,o,c,n))
 WRAP(query,(void *v,IfsFsVolumeInfoV2 *o),query_impl(v,o))
+WRAP(format,(const IfsFsHostRuntimeV2 *h,uint32_t variant,const char *label,uint32_t flags),format_impl(h,variant,label,flags))
 static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ},
 .probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path};
-static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY},.query=query};
+static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT},.query=query,.format=format};
+static const IfsFsFormatProfileOpsV2 profile={.header={2,sizeof profile,IFS_FS_GROUP_FORMAT_PROFILE,0,IFS_FS_FORMAT_PROFILE_DEFAULT},.get_default=format_profile};
 static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_MAP},.map=map_path};
 static const IfsFsAllocationOpsV2 allocation={.header={2,sizeof allocation,IFS_FS_GROUP_ALLOCATION,0,IFS_FS_ALLOCATION_MAP},.map=allocation_map};
 static const IfsFsGroupHeaderV2 *group(uint32_t id,uint32_t lo,uint32_t hi)
@@ -339,9 +363,10 @@ static const IfsFsGroupHeaderV2 *group(uint32_t id,uint32_t lo,uint32_t hi)
     if(id==IFS_FS_GROUP_VOLUME)return &volume.header;
     if(id==IFS_FS_GROUP_DEFRAG)return &defrag.header;
     if(id==IFS_FS_GROUP_ALLOCATION)return &allocation.header;
+    if(id==IFS_FS_GROUP_FORMAT_PROFILE)return &profile.header;
     return NULL;
 }
 __attribute__((used,section(".ifsmeta")))static const char identity[]="IFS-MODULE:qnx4:common2";
 static const IfsFsModuleApiV2 api={.abi_version=2,.structure_bytes=sizeof api,.format_id="qnx4",
-.runtime_profiles=IFS_FS_PROFILE_HOSTED,.group_mask=IFS_FS_GROUP_BIT(IFS_FS_GROUP_CORE)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_VOLUME)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_DEFRAG)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_ALLOCATION),.query_group=group};
+.runtime_profiles=IFS_FS_PROFILE_HOSTED,.group_mask=IFS_FS_GROUP_BIT(IFS_FS_GROUP_CORE)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_VOLUME)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_DEFRAG)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_ALLOCATION)|IFS_FS_GROUP_BIT(IFS_FS_GROUP_FORMAT_PROFILE),.query_group=group};
 __attribute__((visibility("default")))const IfsFsModuleApiV2 *infiltrator_filesystem_api_v2(void){return &api;}
