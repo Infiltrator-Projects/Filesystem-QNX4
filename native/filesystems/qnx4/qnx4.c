@@ -239,7 +239,7 @@ static int discover(const IfsFsHostRuntimeV2 *h,Session *s)
     s->bitmap=bits;
     if(!bit(bits,0)||!bit(bits,1)){rc=IFS_FS_CORRUPT;goto fail;}
     /* Reject bitmap padding that falsely advertises unavailable blocks. */
-    if(s->blocks%8u && (bits[bytes-1u]>>(s->blocks%8u))!=(255u>>(s->blocks%8u))){
+    if(s->blocks%8u && ((uint32_t)bits[bytes-1u]>>(s->blocks%8u))!=(255u>>(s->blocks%8u))){
         rc=IFS_FS_CORRUPT;goto fail;
     }
     Map verify={0};

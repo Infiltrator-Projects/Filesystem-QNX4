@@ -24,7 +24,7 @@ static void make_link(uint8_t *p,const char *name,uint32_t block,uint8_t slot)
 static int format_profile(IfsFsFormatProfileV2 *p)
 {
     if(!p||p->structure_bytes<sizeof *p)return IFS_FS_INVALID;
-    *p=(IfsFsFormatProfileV2){.structure_bytes=sizeof *p,.format_variant=4,.probe_variant=4,
+    *p=(IfsFsFormatProfileV2){.structure_bytes=sizeof *p,.flags=IFS_FS_FORMAT_REQUIRE_CHECK,.format_variant=4,.probe_variant=4,
         .exact_block_bytes=BB,.layout=IFS_FS_LAYOUT_MULTI_EXTENT,
         .minimum_bytes=FORMAT_MIN,.recommended_bytes=16u*1024u*1024u,.maximum_bytes=FORMAT_MAX};
     return IFS_FS_OK;
@@ -83,6 +83,6 @@ static int format_impl(const IfsFsHostRuntimeV2 *h,uint32_t variant,const char *
     if(!rc&&h->flush(h->context))rc=IFS_FS_IO_ERROR;
     if(rc){(void)ifs_fs_host_write_bytes_v2(h,BB,p,BB);(void)h->flush(h->context);return rc;}
     Session verify;rc=discover(h,&verify);
-    if(!rc)session_drop(&verify);
+    if(!rc){rc=check_native(&verify);session_drop(&verify);}
     return rc;
 }
