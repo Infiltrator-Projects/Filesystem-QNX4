@@ -14,7 +14,7 @@ The hosted implementation is exposed through `infiltrator_filesystem_api_v2`, us
 
 ## 4. Integrity, mutation, allocation and recovery
 
-Mutation, formatting, check/repair and DEFRAG map/plan/execute/verify/recover require format-specific allocation and ordering invariants, exclusive writable host access and demonstrated interruption recovery. Unsupported operations, including relocation and growth reservation, must be rejected before writing. Preserve native disk semantics and do not add a kernel or FUSE fallback as an alternative filesystem authority.
+Mutation, formatting, check/repair and DEFRAG map/plan/execute/verify/recover require format-specific allocation and ordering invariants, exclusive writable host access and demonstrated interruption recovery. Unsupported operations must be rejected before writing. Native relocation and persistent growth reservation are implemented; independent consumer qualification remains required. Preserve native disk semantics and do not add a kernel or FUSE fallback as an alternative filesystem authority.
 
 ## 5. Build, installation and release
 
@@ -22,7 +22,7 @@ The target installation is `/System/Filesystems/QNX4.so` and `/System/Resources/
 
 ## 6. Qualification and limitations
 
-Independent QNX4 media, invalid inode pointers, malformed extents and allocation contradictions. Compare independent payloads and unchanged-image hashes; inject truncation, corruption and I/O faults. Establish exact-revision ABI, hosted and import-free freestanding qualification, then independently test BOOT and kernel integration. Hosted synthetic-image build, runtime and journal interruption tests have passed; independent foreign-media, freestanding, packaging and consumer qualification remain outstanding.
+Independent QNX4 media, invalid inode pointers, malformed extents and allocation contradictions. Compare independent payloads and unchanged-image hashes; inject truncation, corruption and I/O faults. Establish exact-revision ABI, hosted and import-free freestanding qualification, then independently test BOOT and kernel integration. Hosted synthetic-image build, runtime and journal interruption tests have passed; independent foreign-media, freestanding, packaging and full consumer qualification remain outstanding.
 
 ## 7. Technical references and provenance
 
@@ -50,3 +50,7 @@ Version 0.1.4 introduces a native allocated journal-owner file and durable physi
 ## Development implementation 0.1.8
 
 Versions 0.1.6–0.1.8 validate actual parent backlinks, implement native journalled rename/move and removal, and support transactional copy-on-write payload writes and truncation, including zero-filled extension. Existing unchanged extents are preserved; direct prepublication writes are restricted to wholly unallocated physical pages. Mixed pages and inode/bitmap changes use the redo transaction. Existing directory and inode-file capacity remains bounded. Foreign writable mounts, relocation, persistent growth reservations and full consumer qualification are not implemented or qualified. The exact [0.1.8 implementation CI run](https://github.com/Infiltrator-Projects/Filesystem-QNX4/actions/runs/45927194924) passed normal and sanitizer builds, including 270 journal interruption cases per build across 512- and 4096-byte sector sizes. This is synthetic-image evidence, not independent interoperability or package qualification.
+
+## Development implementation 0.1.11
+
+Native extent relocation, persistent 10% growth preallocation and reservation consumption are implemented. Plans are provider-owned and verified against native extents and payload digests. The exact [0.1.10 CI](https://github.com/Infiltrator-Projects/Filesystem-QNX4/actions/runs/45928052952) passed 462 interruption cases per normal and sanitizer build. The [0.1.11 CI](https://github.com/Infiltrator-Projects/Filesystem-QNX4/actions/runs/45928139049) also passed dynamic directory and inode-file growth across initial formatting boundaries, including reopen and removal. These are synthetic native tests. A separate pinned production-consumer job now gates the full 200 MiB corpus and both mutation policies; its result is not yet established. Foreign media mutation, independent interoperability, freestanding, BOOT and kernel qualification, operational manual and release packaging remain outstanding.

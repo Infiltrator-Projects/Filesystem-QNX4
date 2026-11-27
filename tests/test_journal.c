@@ -130,6 +130,76 @@ static void relocation_cuts(const IfsFsCoreOpsV2 *c,const IfsFsVolumeOpsV2 *v,
     assert(recovered);
     printf("QNX4 relocation journal interruption PASS policy=%u sector=%u cases=%u recovered=%u\n",policy,d->sector,cuts*3u,recovered);
 }
+/* Fill metadata to an actual allocation boundary, then interrupt the
+ * transaction that extends the directory/inode file and creates its link. */
+static void expansion_cuts(const IfsFsCoreOpsV2 *c,const IfsFsVolumeOpsV2 *v,
+                           const IfsFsDefragOpsV2 *m,Disk *d,uint8_t *base,unsigned kind)
+{
+    memset(d->media,0,SIZE);memset(d->durable,0,SIZE);
+    d->events=d->cut=d->mode=0;d->dead=0;
+    IfsFsHostRuntimeV2 h=host(d,1);
+    assert(v->format(&h,4,NULL,0)==0);
+    void *vol=NULL;IfsFsVolumeInfoV2 info={.structure_bytes=sizeof info};
+    char name[64],path[64];
+    IfsFsEntryV2 e={.structure_bytes=sizeof e,.name=name,.name_capacity=sizeof name};
+    assert(c->mount(&h,&vol,&info)==0);
+    assert(c->create(vol,"/guard",IFS_FS_ENTRY_FILE)==0);
+    const uint8_t guard[]={1,7,13,19,23,31};
+    assert(c->write(vol,"/guard",0,guard,sizeof guard)==0);
+    if(kind)assert(c->create(vol,"/nested",IFS_FS_ENTRY_DIRECTORY)==0);
+    /* Root reserves seven slots; nested reserves dot and dotdot.
+     * Inode-file has 128 records, one reserved, guard + nested used. */
+    unsigned count=kind==0?24u:kind==1?6u:125u;
+    for(unsigned i=0;i<count;i++){
+        snprintf(path,sizeof path,kind?"/nested/f%03u":"/f%03u",i);
+        assert(c->create(vol,path,IFS_FS_ENTRY_FILE)==0);
+    }
+    const char *meta=kind==0?"/":kind==1?"/nested":"/.inodes";
+    const char *target=kind?"/nested/new":"/new";
+    assert(c->stat(vol,meta,&e)==0);
+    uint64_t oldsize=e.size_bytes;
+    assert(v->query(vol,&info)==0);uint64_t before=info.free_bytes;
+    assert(c->unmount(vol)==0);memcpy(base,d->durable,SIZE);reset(d,base);
+    assert(c->mount(&h,&vol,&info)==0);
+    assert(c->create(vol,target,IFS_FS_ENTRY_FILE)==0);
+    unsigned cuts=d->events;assert(cuts>=8);
+    assert(c->stat(vol,meta,&e)==0&&e.size_bytes>oldsize);
+    uint64_t newsize=e.size_bytes;
+    assert(v->query(vol,&info)==0&&info.free_bytes<before);uint64_t after=info.free_bytes;
+    assert(c->unmount(vol)==0);
+    unsigned recovered=0;
+    for(unsigned mode=0;mode<3;mode++)for(unsigned cut=1;cut<=cuts;cut++){
+        reset(d,base);assert(c->mount(&h,&vol,&info)==0);
+        d->mode=mode;d->cut=cut;
+        assert(c->create(vol,target,IFS_FS_ENTRY_FILE)!=0&&d->dead);
+        assert(c->unmount(vol)==0);
+        memcpy(d->media,d->durable,SIZE);d->cut=0;d->dead=0;d->events=0;
+        IfsFsHostRuntimeV2 ro=host(d,0);
+        int rr=c->mount(&ro,&vol,&info);
+        assert(rr==0||rr==IFS_FS_BUSY||rr==IFS_FS_CORRUPT);
+        if(!rr)assert(c->unmount(vol)==0);
+        assert(!d->events);
+        assert(c->mount(&h,&vol,&info)==0);
+        uint64_t repaired=99,errors=99;
+        assert(m->recover(vol,0,&repaired)==0&&repaired<=1);
+        recovered+=(unsigned)repaired;
+        assert(m->recover(vol,0,&repaired)==0&&!repaired);
+        int state=c->stat(vol,target,&e);
+        assert(state==0||state==IFS_FS_NOT_FOUND);
+        assert(c->stat(vol,meta,&e)==0&&e.size_bytes==(state?oldsize:newsize));
+        for(unsigned i=0;i<count;i++){
+            snprintf(path,sizeof path,kind?"/nested/f%03u":"/f%03u",i);
+            assert(c->stat(vol,path,&e)==0&&!e.size_bytes);
+        }
+        uint8_t got[sizeof guard];
+        assert(c->read(vol,"/guard",0,got,sizeof got)==0&&!memcmp(got,guard,sizeof got));
+        assert(v->query(vol,&info)==0&&info.free_bytes==(state?before:after));
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0);
+    }
+    assert(recovered);
+    printf("QNX4 metadata expansion interruption PASS kind=%u sector=%u cases=%u recovered=%u\n",kind,d->sector,cuts*3u,recovered);
+}
 int main(int argc,char **argv){
     assert(argc==2);void *so=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);assert(so);
     void *sym=dlsym(so,IFS_FS_COMMON_EXPORT_V2);assert(sym);
@@ -218,6 +288,7 @@ int main(int argc,char **argv){
         }
         relocation_cuts(c,v,m,&d,base,0);
         relocation_cuts(c,v,m,&d,base,10);
+        for(unsigned kind=0;kind<3;kind++)expansion_cuts(c,v,m,&d,base,kind);
     }
     free(base);free(d.media);free(d.durable);dlclose(so);return 0;
 }
