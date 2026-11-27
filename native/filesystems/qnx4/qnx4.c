@@ -377,6 +377,7 @@ static int allocation_impl(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_
 #include "check.h"
 #include "format.h"
 #include "mutation.h"
+#include "payload.h"
 static int recover_impl(void *v,uint32_t flags,uint64_t *n)
 {
     if(!n)return IFS_FS_INVALID;
@@ -400,12 +401,14 @@ WRAP(query,(void *v,IfsFsVolumeInfoV2 *o),query_impl(v,o))
 WRAP(format,(const IfsFsHostRuntimeV2 *h,uint32_t variant,const char *label,uint32_t flags),format_impl(h,variant,label,flags))
 WRAP(check,(void *v,uint32_t flags,uint64_t *errors),check_impl(v,flags,errors))
 WRAP(create_path,(void *v,const char *p,uint32_t type),create_impl(v,p,type))
+WRAP(write_path,(void *v,const char *p,uint64_t at,const void *b,uint32_t n),write_impl(v,p,at,b,n))
+WRAP(truncate_path,(void *v,const char *p,uint64_t n),truncate_impl(v,p,n))
 WRAP(remove_path,(void *v,const char *p),remove_impl(v,p))
 WRAP(rename_path,(void *v,const char *p,const char *q),rename_impl(v,p,q))
 WRAP(recover,(void *v,uint32_t flags,uint64_t *n),recover_impl(v,flags,n))
 WRAP(sync_volume,(void *v),sync_impl(v))
-static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ|IFS_FS_CORE_CREATE|IFS_FS_CORE_REMOVE|IFS_FS_CORE_RENAME},
-.probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path,.create=create_path,.remove=remove_path,.rename=rename_path};
+static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ|IFS_FS_CORE_WRITE|IFS_FS_CORE_CREATE|IFS_FS_CORE_REMOVE|IFS_FS_CORE_RENAME|IFS_FS_CORE_TRUNCATE},
+.probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path,.create=create_path,.remove=remove_path,.rename=rename_path,.write=write_path,.truncate=truncate_path};
 static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT|IFS_FS_VOLUME_CHECK|IFS_FS_VOLUME_SYNC},.query=query,.format=format,.check=check,.sync=sync_volume};
 static const IfsFsFormatProfileOpsV2 profile={.header={2,sizeof profile,IFS_FS_GROUP_FORMAT_PROFILE,0,IFS_FS_FORMAT_PROFILE_DEFAULT},.get_default=format_profile};
 static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_MAP|IFS_FS_DEFRAG_RECOVER},.map=map_path,.recover=recover};

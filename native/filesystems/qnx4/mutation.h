@@ -5,7 +5,7 @@
  * This revision supports create of regular files and directories in
  * available native directory/inode slots, and transactionally removes or
  * renames native namespace records. Directory and inode-file extension
- * and payload writes remain separate work.
+ * remain separate work.
  */
 typedef struct {Tx tx;uint8_t *bitmap;uint64_t free;} Mutation;
 static size_t bitmap_bytes(void){return (size_t)(((uint64_t)active.blocks+7u)/8u);}

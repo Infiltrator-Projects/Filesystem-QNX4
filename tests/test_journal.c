@@ -45,7 +45,13 @@ static IfsFsHostRuntimeV2 host(Disk *d,int writable){
 static int namespace_change(const IfsFsCoreOpsV2 *c,void *vol,unsigned op){
     if(op==0)return c->create(vol,"/new-directory",IFS_FS_ENTRY_DIRECTORY);
     if(op==1)return c->rename(vol,"/source","/destination");
-    return c->remove(vol,"/source");
+    if(op==2)return c->remove(vol,"/source");
+    if(op==3){
+        uint8_t payload[8192];
+        for(unsigned i=0;i<sizeof payload;i++)payload[i]=(uint8_t)(i*13u+i/127u);
+        return c->write(vol,"/guard",0,payload,sizeof payload);
+    }
+    return c->truncate(vol,"/payload",513u);
 }
 static void reset(Disk *d,const uint8_t *base){
     memcpy(d->media,base,SIZE);memcpy(d->durable,base,SIZE);
@@ -72,15 +78,19 @@ int main(int argc,char **argv){
         assert(c->unmount(vol)==0);
         assert(c->mount(&h,&vol,&info)==0);
         assert(c->create(vol,"/source",IFS_FS_ENTRY_DIRECTORY)==0);
+        assert(c->create(vol,"/payload",IFS_FS_ENTRY_FILE)==0);
+        uint8_t payload[8192];
+        for(unsigned i=0;i<sizeof payload;i++)payload[i]=(uint8_t)(i*13u+i/127u);
+        assert(c->write(vol,"/payload",0,payload,sizeof payload)==0);
         assert(c->unmount(vol)==0);
         memcpy(base,d.durable,SIZE);
-        for(unsigned op=0;op<3;op++){
+        for(unsigned op=0;op<5;op++){
         reset(&d,base);
         assert(c->mount(&h,&vol,&info)==0);
         uint64_t before=info.free_bytes;
         assert(c->create(vol,"/guard",IFS_FS_ENTRY_FILE)==IFS_FS_EXISTS && !d.events);
         assert(namespace_change(c,vol,op)==0);
-        assert(v->query(vol,&info)==0);uint64_t after=info.free_bytes;assert(op==0?before>after:op==1?before==after:before<after);
+        assert(v->query(vol,&info)==0);uint64_t after=info.free_bytes;assert((op==0||op==3)?before>after:op==1?before==after:before<after);
         unsigned cuts=d.events;assert(cuts>=8);
         assert(c->unmount(vol)==0);
         unsigned recovered=0;
@@ -103,14 +113,29 @@ int main(int argc,char **argv){
             recovered+=(unsigned)repairs;
             assert(m->recover(vol,0,&repairs)==0 && !repairs);
             char name[64];IfsFsEntryV2 e={.structure_bytes=sizeof e,.name=name,.name_capacity=sizeof name};
-            assert(c->stat(vol,"/guard",&e)==0&&!e.size_bytes);
-            const char *target=op==0?"/new-directory":op==1?"/destination":"/source";
-            int state=c->stat(vol,target,&e);
-            assert(state==IFS_FS_OK||state==IFS_FS_NOT_FOUND);
-            if(!state)assert(c->directory_entry(vol,target,0,&e)==IFS_FS_END);
-            if(op==1)assert(c->stat(vol,"/source",&e)==(state==IFS_FS_OK?IFS_FS_NOT_FOUND:IFS_FS_OK));
+            assert(c->stat(vol,"/guard",&e)==0);
+            uint8_t got[8192];int committed=0;
+            if(op==3){
+                assert(e.size_bytes==0||e.size_bytes==sizeof payload);
+                committed=e.size_bytes!=0;
+                if(committed)assert(c->read(vol,"/guard",0,got,sizeof got)==0&&!memcmp(got,payload,sizeof got));
+            }else assert(!e.size_bytes);
+            assert(c->stat(vol,"/payload",&e)==0);
+            if(op==4){
+                assert(e.size_bytes==513u||e.size_bytes==sizeof payload);
+                committed=e.size_bytes==513u;
+            }else assert(e.size_bytes==sizeof payload);
+            assert(c->read(vol,"/payload",0,got,(uint32_t)e.size_bytes)==0&&
+                !memcmp(got,payload,(size_t)e.size_bytes));
+            if(op<3){
+                const char *target=op==0?"/new-directory":op==1?"/destination":"/source";
+                int state=c->stat(vol,target,&e);
+                assert(state==IFS_FS_OK||state==IFS_FS_NOT_FOUND);
+                if(!state)assert(c->directory_entry(vol,target,0,&e)==IFS_FS_END);
+                if(op==1)assert(c->stat(vol,"/source",&e)==(state==IFS_FS_OK?IFS_FS_NOT_FOUND:IFS_FS_OK));
+                committed=op==2?state==IFS_FS_NOT_FOUND:state==IFS_FS_OK;
+            }
             assert(v->query(vol,&info)==0);
-            int committed=op==2?state==IFS_FS_NOT_FOUND:state==IFS_FS_OK;
             assert(info.free_bytes==(committed?after:before));
             assert(v->check(vol,0,&errors)==0&&!errors);
             assert(c->unmount(vol)==0);

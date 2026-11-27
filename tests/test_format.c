@@ -100,6 +100,32 @@ int main(int argc,char **argv){
         assert(c->unmount(vol)==0);
         assert(c->mount(&h,&vol,&info)==0);
         uint64_t free_before=info.free_bytes;
+        /* Exercise unaligned writes, large streaming growth, holes, physical
+         * extent chains, preservation of surrounding bytes and cold reopen. */
+        const char *payload="/payload";
+        uint32_t len=d.sector==512?65536u:2u*1024u*1024u;
+        uint8_t *data=malloc(len+2000u),*got=malloc(len+2000u);
+        assert(data&&got);
+        for(uint32_t i=0;i<len;i++)data[i]=(uint8_t)(i*17u+i/509u);
+        assert(c->create(vol,payload,IFS_FS_ENTRY_FILE)==0);
+        assert(c->write(vol,payload,0,data,len)==0);
+        assert(c->write(vol,payload,len+601u,"tail",4)==0);
+        memset(data+len,0,601u);memcpy(data+len+601u,"tail",4);
+        memset(data+507u,0xa5,1003u);
+        assert(c->write(vol,payload,507u,data+507u,1003u)==0);
+        assert(c->read(vol,payload,0,got,len+605u)==0&&!memcmp(got,data,len+605u));
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0&&c->mount(&h,&vol,&info)==0);
+        assert(c->read(vol,payload,0,got,len+605u)==0&&!memcmp(got,data,len+605u));
+        assert(c->truncate(vol,payload,513u)==0);
+        assert(c->truncate(vol,payload,1700u)==0);
+        memset(data+513u,0,1187u);
+        assert(c->read(vol,payload,0,got,1700u)==0&&!memcmp(got,data,1700u));
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->remove(vol,payload)==0);
+        assert(v->query(vol,&info)==0&&info.free_bytes==free_before);
+        free(data);free(got);
+
         assert(c->create(vol,"/other",IFS_FS_ENTRY_DIRECTORY)==0);
         assert(c->rename(vol,"/folder","/folder/sub")==IFS_FS_INVALID);
         assert(c->remove(vol,"/folder")==IFS_FS_BUSY);
