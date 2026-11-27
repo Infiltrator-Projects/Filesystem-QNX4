@@ -29,6 +29,7 @@ int main(int argc,char **argv){
     const IfsFsModuleApiV2 *api=fn();assert(ifs_fs_api_v2_valid(api,"qnx4"));
     const IfsFsCoreOpsV2 *c=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_CORE);
     const IfsFsVolumeOpsV2 *v=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_VOLUME);
+    const IfsFsDefragOpsV2 *rel=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_DEFRAG);
     const IfsFsFormatProfileOpsV2 *fp=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_FORMAT_PROFILE);
     IfsFsFormatProfileV2 profile={.structure_bytes=sizeof profile};
     assert(fp&&fp->get_default(&profile)==0&&ifs_fs_format_profile_v2_valid(&profile));
@@ -123,6 +124,30 @@ int main(int argc,char **argv){
         assert(c->read(vol,payload,0,got,1700u)==0&&!memcmp(got,data,1700u));
         assert(v->check(vol,0,&errors)==0&&!errors);
         assert(c->remove(vol,payload)==0);
+        /* Interleave actual writes; prove fragmented physical layout, then
+         * plan/execute/verify through the public ABI, never raw relocation. */
+        assert(c->create(vol,"/target",IFS_FS_ENTRY_FILE)==0);
+        assert(c->create(vol,"/blocker",IFS_FS_ENTRY_FILE)==0);
+        assert(c->write(vol,"/target",0,data,8192)==0);
+        assert(c->write(vol,"/blocker",0,data,8192)==0);
+        assert(c->write(vol,"/target",8192,data+8192,8192)==0);
+        IfsFsExtentV2 ext[4];uint32_t n=0;
+        assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n>=2);
+        void *plan=NULL;uint64_t moved=0;before=d.writes;
+        assert(rel->plan(vol,"/",10,&plan)==IFS_FS_UNSUPPORTED&&!plan&&d.writes==before);
+        assert(rel->plan(vol,"/target",0,&plan)==0&&plan&&d.writes==before);
+        assert(c->truncate(vol,"/target",0)==IFS_FS_BUSY&&d.writes==before);
+        assert(rel->verify(vol,plan)==IFS_FS_BUSY);
+        assert(rel->execute(vol,plan,&moved)==0&&moved==16384);
+        assert(rel->verify(vol,plan)==0);
+        rel->release_plan(vol,plan);
+        assert(rel->verify(vol,plan)==IFS_FS_INVALID);
+        assert(c->unmount(vol)==0&&c->mount(&h,&vol,&info)==0);
+        assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n==1&&ext[0].length==16384);
+        assert(c->read(vol,"/target",0,got,16384)==0&&!memcmp(data,got,16384));
+        assert(c->read(vol,"/blocker",0,got,8192)==0&&!memcmp(data,got,8192));
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->remove(vol,"/target")==0&&c->remove(vol,"/blocker")==0);
         assert(v->query(vol,&info)==0&&info.free_bytes==free_before);
         free(data);free(got);
 

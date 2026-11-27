@@ -17,6 +17,9 @@ typedef struct {IfsFsHostRuntimeV2 host;uint32_t blocks;uint8_t *bitmap;
     Node root,inodes;Map inode_map;uint64_t free;uintptr_t token;
     int journal_owned,writable,fault;uint64_t recovered;} Session;
 static Session active;
+static uintptr_t active_plan;
+static int plan_executing;
+static void reloc_drop(void);
 static uintptr_t generation;
 static atomic_flag gate=ATOMIC_FLAG_INIT;
 static int enter(void){return !atomic_flag_test_and_set_explicit(&gate,memory_order_acquire);}
@@ -303,7 +306,7 @@ static int mount_impl(const IfsFsHostRuntimeV2 *h,void **v,IfsFsVolumeInfoV2 *o)
     if(writable){rc=check_native(&active);if(rc){session_drop(&active);return rc;}}
     active.token=++generation;*v=(void*)active.token;info(&active,o);return IFS_FS_OK;
 }
-static int unmount_impl(void *v){if(!v||(uintptr_t)v!=active.token)return IFS_FS_INVALID;session_drop(&active);return IFS_FS_OK;}
+static int unmount_impl(void *v){if(!v||(uintptr_t)v!=active.token)return IFS_FS_INVALID;reloc_drop();session_drop(&active);return IFS_FS_OK;}
 static int resolve(const char *path,Entry *e)
 {
     if(!path||*path!='/')return IFS_FS_INVALID;
@@ -378,6 +381,7 @@ static int allocation_impl(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_
 #include "format.h"
 #include "mutation.h"
 #include "payload.h"
+#include "relocation.h"
 static int recover_impl(void *v,uint32_t flags,uint64_t *n)
 {
     if(!n)return IFS_FS_INVALID;
@@ -405,13 +409,17 @@ WRAP(write_path,(void *v,const char *p,uint64_t at,const void *b,uint32_t n),wri
 WRAP(truncate_path,(void *v,const char *p,uint64_t n),truncate_impl(v,p,n))
 WRAP(remove_path,(void *v,const char *p),remove_impl(v,p))
 WRAP(rename_path,(void *v,const char *p,const char *q),rename_impl(v,p,q))
+WRAP(plan,(void *v,const char *p,uint32_t policy,void **out),reloc_plan_impl(v,p,policy,out))
+WRAP(execute,(void *v,void *p,uint64_t *moved),reloc_execute_impl(v,p,moved))
+WRAP(verify,(void *v,void *p),reloc_verify_impl(v,p))
+static void release_plan(void *v,void *p){if(enter()){reloc_release_impl(v,p);(void)leave(0);}}
 WRAP(recover,(void *v,uint32_t flags,uint64_t *n),recover_impl(v,flags,n))
 WRAP(sync_volume,(void *v),sync_impl(v))
 static const IfsFsCoreOpsV2 core={.header={2,sizeof core,IFS_FS_GROUP_CORE,0,IFS_FS_CORE_PROBE|IFS_FS_CORE_MOUNT|IFS_FS_CORE_STAT|IFS_FS_CORE_LIST|IFS_FS_CORE_READ|IFS_FS_CORE_WRITE|IFS_FS_CORE_CREATE|IFS_FS_CORE_REMOVE|IFS_FS_CORE_RENAME|IFS_FS_CORE_TRUNCATE},
 .probe=probe,.mount=mount,.unmount=unmount,.stat=stat_path,.directory_entry=list_path,.read=read_path,.create=create_path,.remove=remove_path,.rename=rename_path,.write=write_path,.truncate=truncate_path};
 static const IfsFsVolumeOpsV2 volume={.header={2,sizeof volume,IFS_FS_GROUP_VOLUME,0,IFS_FS_VOLUME_QUERY|IFS_FS_VOLUME_FORMAT|IFS_FS_VOLUME_CHECK|IFS_FS_VOLUME_SYNC},.query=query,.format=format,.check=check,.sync=sync_volume};
 static const IfsFsFormatProfileOpsV2 profile={.header={2,sizeof profile,IFS_FS_GROUP_FORMAT_PROFILE,0,IFS_FS_FORMAT_PROFILE_DEFAULT},.get_default=format_profile};
-static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_MAP|IFS_FS_DEFRAG_RECOVER},.map=map_path,.recover=recover};
+static const IfsFsDefragOpsV2 defrag={.header={2,sizeof defrag,IFS_FS_GROUP_DEFRAG,0,IFS_FS_DEFRAG_ALL},.map=map_path,.plan=plan,.execute=execute,.verify=verify,.recover=recover,.release_plan=release_plan};
 static const IfsFsAllocationOpsV2 allocation={.header={2,sizeof allocation,IFS_FS_GROUP_ALLOCATION,0,IFS_FS_ALLOCATION_MAP},.map=allocation_map};
 static const IfsFsGroupHeaderV2 *group(uint32_t id,uint32_t lo,uint32_t hi)
 {

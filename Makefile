@@ -4,7 +4,7 @@ CFLAGS ?= -O2
 BASE = -std=c11 -Wall -Wextra -Werror -ILibraries/include
 .PHONY: all check clean
 all: build/QNX4.so
-build/QNX4.so: native/filesystems/qnx4/qnx4.c native/filesystems/qnx4/format.h native/filesystems/qnx4/check.h native/filesystems/qnx4/journal.h native/filesystems/qnx4/mutation.h native/filesystems/qnx4/payload.h
+build/QNX4.so: native/filesystems/qnx4/qnx4.c native/filesystems/qnx4/format.h native/filesystems/qnx4/check.h native/filesystems/qnx4/journal.h native/filesystems/qnx4/mutation.h native/filesystems/qnx4/payload.h native/filesystems/qnx4/relocation.h
 	mkdir -p build
 	$(CC) $(BASE) $(CFLAGS) -fPIC -fvisibility=hidden -shared -Wl,-z,defs -o $@ $<
 build/test_qnx4: tests/test_qnx4.c

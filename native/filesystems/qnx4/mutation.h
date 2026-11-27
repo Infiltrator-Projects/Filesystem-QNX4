@@ -14,6 +14,7 @@ static int mutation_begin(Mutation *m,void *v)
     *m=(Mutation){0};
     if(!live(v))return IFS_FS_INVALID;
     if(!active.writable)return IFS_FS_ACCESS;
+    if(active_plan&&!plan_executing)return IFS_FS_BUSY;
     if(cancelled(&active))return IFS_FS_BUSY;
     int rc=tx_begin(&m->tx,&active.host);if(rc)return rc;
     m->bitmap=alloc(&active,bitmap_bytes());
