@@ -23,3 +23,10 @@ void qsort(void *base,size_t count,size_t width,int (*cmp)(const void *,const vo
     for(size_t i=count/2;i;)sift(p,--i,count,width,cmp);
     for(size_t i=count;i>1;){--i;swap(p,p+i*width,width);sift(p,0,i,width,cmp);}
 }
+
+char *strrchr(const char *s,int c)
+{
+    const char *last=NULL;
+    do { if((unsigned char)*s==(unsigned char)c)last=s; } while(*s++);
+    return (char *)last;
+}
