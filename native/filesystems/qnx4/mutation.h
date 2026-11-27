@@ -37,6 +37,7 @@ static int mutation_commit(Mutation *m)
     int rc=tx_commit(&m->tx);
     if(rc){active.fault=1;return rc;}
     memcpy(active.bitmap,m->bitmap,bitmap_bytes());active.free=m->free;
+    drop(&active,active.reserved);active.reserved=NULL;
     return IFS_FS_OK;
 }
 static int allocate_block(Mutation *m,uint32_t *block)

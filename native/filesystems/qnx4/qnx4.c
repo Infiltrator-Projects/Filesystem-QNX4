@@ -13,7 +13,7 @@ enum { BB=512,REC=64,USED=1,LINK=8,INODE=16,BUSY=4,REG=0100000,DIR=0040000 };
 typedef struct {uint32_t first,count;} Run;
 typedef struct {uint8_t raw[REC];uint64_t identity;} Node;
 typedef struct {Run *run;uint32_t count;} Map;
-typedef struct {IfsFsHostRuntimeV2 host;uint32_t blocks;uint8_t *bitmap;
+typedef struct {IfsFsHostRuntimeV2 host;uint32_t blocks;uint8_t *bitmap,*reserved;
     Node root,inodes;Map inode_map;uint64_t free;uintptr_t token;
     int journal_owned,writable,fault;uint64_t recovered;} Session;
 static Session active;
@@ -212,7 +212,7 @@ done:
 }
 static void session_drop(Session *s)
 {
-    map_drop(s,&s->inode_map);drop(s,s->bitmap);*s=(Session){0};
+    map_drop(s,&s->inode_map);drop(s,s->bitmap);drop(s,s->reserved);*s=(Session){0};
 }
 static int discover(const IfsFsHostRuntimeV2 *h,Session *s)
 {
@@ -364,15 +364,23 @@ static int map_impl(void *v,const char *path,uint64_t first,IfsFsExtentV2 *o,uin
     }
     map_drop(&active,&m);return *n?IFS_FS_OK:IFS_FS_END;
 }
+static uint32_t allocation_state(uint32_t b)
+{
+    if(b<2u||(active.reserved&&bit(active.reserved,b)))return IFS_FS_SPACE_RESERVED;
+    return bit(active.bitmap,b)?IFS_FS_SPACE_ALLOCATED:IFS_FS_SPACE_FREE;
+}
 static int allocation_impl(void *v,uint64_t at,IfsFsAllocationRangeV2 *o,uint32_t cap,uint32_t *n)
 {
     if(!n)return IFS_FS_INVALID;
     *n=0;if(!live(v)||!o||!cap||at%BB||at>(uint64_t)active.blocks*BB)return IFS_FS_INVALID;
+    if(active.journal_owned&&!active.reserved){
+        int rc=check_native(&active);if(rc)return rc;
+    }
     uint32_t b=(uint32_t)(at/BB);
     while(b<active.blocks&&*n<cap){
         if(cancelled(&active)){*n=0;return IFS_FS_BUSY;}
-        uint32_t first=b,state=b<2?IFS_FS_SPACE_RESERVED:bit(active.bitmap,b)?IFS_FS_SPACE_ALLOCATED:IFS_FS_SPACE_FREE;
-        do {++b;}while(b<active.blocks&&(b<2?IFS_FS_SPACE_RESERVED:bit(active.bitmap,b)?IFS_FS_SPACE_ALLOCATED:IFS_FS_SPACE_FREE)==state);
+        uint32_t first=b,state=allocation_state(b);
+        do {++b;}while(b<active.blocks&&allocation_state(b)==state);
         o[(*n)++]=(IfsFsAllocationRangeV2){.physical_offset=(uint64_t)first*BB,.length=(uint64_t)(b-first)*BB,.state=state};
     }
     return *n?IFS_FS_OK:IFS_FS_END;

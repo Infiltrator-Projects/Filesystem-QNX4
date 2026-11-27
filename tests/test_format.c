@@ -30,6 +30,7 @@ int main(int argc,char **argv){
     const IfsFsCoreOpsV2 *c=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_CORE);
     const IfsFsVolumeOpsV2 *v=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_VOLUME);
     const IfsFsDefragOpsV2 *rel=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_DEFRAG);
+    const IfsFsAllocationOpsV2 *allocation=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_ALLOCATION);
     const IfsFsFormatProfileOpsV2 *fp=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_FORMAT_PROFILE);
     IfsFsFormatProfileV2 profile={.structure_bytes=sizeof profile};
     assert(fp&&fp->get_default(&profile)==0&&ifs_fs_format_profile_v2_valid(&profile));
@@ -134,7 +135,7 @@ int main(int argc,char **argv){
         IfsFsExtentV2 ext[4];uint32_t n=0;
         assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n>=2);
         void *plan=NULL;uint64_t moved=0;before=d.writes;
-        assert(rel->plan(vol,"/",10,&plan)==IFS_FS_UNSUPPORTED&&!plan&&d.writes==before);
+        assert(rel->plan(vol,"/",11,&plan)==IFS_FS_UNSUPPORTED&&!plan&&d.writes==before);
         assert(rel->plan(vol,"/target",0,&plan)==0&&plan&&d.writes==before);
         assert(c->truncate(vol,"/target",0)==IFS_FS_BUSY&&d.writes==before);
         assert(rel->verify(vol,plan)==IFS_FS_BUSY);
@@ -146,6 +147,35 @@ int main(int argc,char **argv){
         assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n==1&&ext[0].length==16384);
         assert(c->read(vol,"/target",0,got,16384)==0&&!memcmp(data,got,16384));
         assert(c->read(vol,"/blocker",0,got,8192)==0&&!memcmp(data,got,8192));
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        /* Refragment, then prove that growth allocates actual native
+         * preallocation and append consumes it without changing the start. */
+        assert(c->remove(vol,"/target")==0&&c->remove(vol,"/blocker")==0);
+        assert(c->create(vol,"/target",IFS_FS_ENTRY_FILE)==0);
+        assert(c->create(vol,"/blocker",IFS_FS_ENTRY_FILE)==0);
+        assert(c->write(vol,"/target",0,data,8192)==0);
+        assert(c->write(vol,"/blocker",0,data,8192)==0);
+        assert(c->write(vol,"/target",8192,data+8192,8192)==0);
+        assert(rel->plan(vol,"/target",10,&plan)==0);
+        assert(rel->execute(vol,plan,&moved)==0&&moved==16384);
+        assert(rel->verify(vol,plan)==0);rel->release_plan(vol,plan);
+        assert(c->unmount(vol)==0&&c->mount(&h,&vol,&info)==0);
+        assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n==1&&ext[0].length==16384);
+        uint64_t start=ext[0].physical_offset,tail=start+16384u;
+        IfsFsAllocationRangeV2 range;
+        assert(allocation->map(vol,tail,&range,1,&n)==0&&n==1&&range.state==IFS_FS_SPACE_RESERVED&&range.length==2048u);
+        uint64_t reserved_free=info.free_bytes;
+        assert(c->write(vol,"/target",16384,data+16384,1024)==0);
+        assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n==1&&ext[0].physical_offset==start&&ext[0].length==17408u);
+        assert(allocation->map(vol,tail+1024u,&range,1,&n)==0&&range.state==IFS_FS_SPACE_RESERVED&&range.length==1024u);
+        assert(c->write(vol,"/target",20,data+20,10)==0);
+        assert(c->truncate(vol,"/target",18432u)==0);
+        assert(rel->map(vol,"/target",0,ext,4,&n)==0&&n==1&&ext[0].physical_offset==start&&ext[0].length==18432u);
+        assert(v->query(vol,&info)==0&&info.free_bytes==reserved_free);
+        memset(data+17408,0,1024);
+        assert(c->read(vol,"/target",0,got,18432)==0&&!memcmp(data,got,18432));
+        assert(c->unmount(vol)==0&&c->mount(&h,&vol,&info)==0);
+        assert(c->read(vol,"/target",0,got,18432)==0&&!memcmp(data,got,18432));
         assert(v->check(vol,0,&errors)==0&&!errors);
         assert(c->remove(vol,"/target")==0&&c->remove(vol,"/blocker")==0);
         assert(v->query(vol,&info)==0&&info.free_bytes==free_before);

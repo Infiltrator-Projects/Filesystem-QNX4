@@ -68,7 +68,7 @@ static uint32_t layout(const IfsFsDefragOpsV2 *m,void *vol,IfsFsExtentV2 out[8])
     return n;
 }
 static void relocation_cuts(const IfsFsCoreOpsV2 *c,const IfsFsVolumeOpsV2 *v,
-                            const IfsFsDefragOpsV2 *m,Disk *d,uint8_t *base)
+                            const IfsFsDefragOpsV2 *m,Disk *d,uint8_t *base,uint32_t policy)
 {
     memset(d->media,0,SIZE);memset(d->durable,0,SIZE);
     d->events=d->cut=d->mode=0;d->dead=0;
@@ -91,7 +91,7 @@ static void relocation_cuts(const IfsFsCoreOpsV2 *c,const IfsFsVolumeOpsV2 *v,
     memcpy(base,d->durable,SIZE);reset(d,base);
     assert(c->mount(&h,&vol,&info)==0);
     void *plan=NULL;uint64_t moved=0;
-    assert(m->plan(vol,"/target",0,&plan)==0&&!d->events);
+    assert(m->plan(vol,"/target",policy,&plan)==0&&!d->events);
     assert(m->execute(vol,plan,&moved)==0&&moved==sizeof payload);
     assert(m->verify(vol,plan)==0);
     uint32_t new_n=layout(m,vol,next);assert(new_n==1);
@@ -101,7 +101,7 @@ static void relocation_cuts(const IfsFsCoreOpsV2 *c,const IfsFsVolumeOpsV2 *v,
     unsigned recovered=0;
     for(unsigned mode=0;mode<3;mode++)for(unsigned cut=1;cut<=cuts;cut++){
         reset(d,base);assert(c->mount(&h,&vol,&info)==0);
-        assert(m->plan(vol,"/target",0,&plan)==0&&!d->events);
+        assert(m->plan(vol,"/target",policy,&plan)==0&&!d->events);
         d->cut=cut;d->mode=mode;
         assert(m->execute(vol,plan,&moved)!=0&&d->dead);
         /* Simulate power loss with no provider sync or error repair. */
@@ -128,7 +128,7 @@ static void relocation_cuts(const IfsFsCoreOpsV2 *c,const IfsFsVolumeOpsV2 *v,
         assert(c->unmount(vol)==0);
     }
     assert(recovered);
-    printf("QNX4 relocation journal interruption PASS sector=%u cases=%u recovered=%u\n",d->sector,cuts*3u,recovered);
+    printf("QNX4 relocation journal interruption PASS policy=%u sector=%u cases=%u recovered=%u\n",policy,d->sector,cuts*3u,recovered);
 }
 int main(int argc,char **argv){
     assert(argc==2);void *so=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);assert(so);
@@ -216,7 +216,8 @@ int main(int argc,char **argv){
         assert(recovered);
         printf("QNX4 namespace journal interruption PASS op=%u sector=%u cases=%u recovered=%u\n",op,d.sector,cuts*3u,recovered);
         }
-        relocation_cuts(c,v,m,&d,base);
+        relocation_cuts(c,v,m,&d,base,0);
+        relocation_cuts(c,v,m,&d,base,10);
     }
     free(base);free(d.media);free(d.durable);dlclose(so);return 0;
 }

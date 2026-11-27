@@ -6,7 +6,7 @@
  */
 typedef struct {
     Session *s;
-    uint8_t *owned,*visited;
+    uint8_t *owned,*visited,*reserved;
     uint16_t *refs;
     uint32_t inode_slots;
 } Check;
@@ -44,7 +44,25 @@ static int check_walk(Check *c,const Node *node,uint64_t parent_identity,unsigne
     }
     c->visited[record/8u]|=mask;
     Map m;int rc=node_map_claim(s,node,&m,c->owned);if(rc)return rc;
-    if(mode(node)!=DIR){map_drop(s,&m);return IFS_FS_OK;}
+    if(mode(node)!=DIR){
+        /* QNX 4 native preallocation is part of the file's extent chain
+         * and marked occupied in the bitmap (QNX KB 9712). It is not
+         * visible through logical EOF. Classify actual owned tail blocks,
+         * never an inferred free-space gap, on our journaled volumes. */
+        if(c->reserved&&mode(node)==REG){
+            uint64_t remaining=((uint64_t)size(node)+BB-1u)/BB;
+            for(uint32_t i=0;i<m.count;i++){
+                Run r=m.run[i];uint32_t used=remaining<r.count?(uint32_t)remaining:r.count;
+                remaining-=used;
+                for(uint32_t j=used;j<r.count;j++){
+                    uint32_t b=r.first+j;
+                    if((b&4095u)==0&&cancelled(s)){map_drop(s,&m);return IFS_FS_BUSY;}
+                    c->reserved[b/8u]|=(uint8_t)(1u<<(b%8u));
+                }
+            }
+        }
+        map_drop(s,&m);return IFS_FS_OK;
+    }
     uint32_t count=0,capacity=0;
     CheckName *names=NULL;
     unsigned dot=0,up=0;
@@ -103,8 +121,10 @@ static int check_native(Session *s)
     if(size(&s->inodes)%REC)return IFS_FS_CORRUPT;
     c.owned=alloc(s,n);c.visited=alloc(s,s->blocks);
     c.refs=alloc(s,(size_t)c.inode_slots*sizeof(*c.refs));
+    if(s->journal_owned)c.reserved=alloc(s,n);
     int rc=IFS_FS_NO_MEMORY;
-    if(!c.owned||!c.visited||!c.refs)goto done;
+    if(!c.owned||!c.visited||!c.refs||(s->journal_owned&&!c.reserved))goto done;
+    if(c.reserved)memset(c.reserved,0,n);
     memset(c.owned,0,n);memset(c.visited,0,s->blocks);
     memset(c.refs,0,(size_t)c.inode_slots*sizeof(*c.refs));
     c.owned[0]=3u;
@@ -122,16 +142,17 @@ static int check_native(Session *s)
         if((b&4095u)==0&&cancelled(s)){rc=IFS_FS_BUSY;goto done;}
         if(bit(c.owned,b)!=bit(s->bitmap,b)){rc=IFS_FS_CORRUPT;goto done;}
     }
+    drop(s,s->reserved);s->reserved=c.reserved;c.reserved=NULL;
     rc=IFS_FS_OK;
 done:
-    drop(s,c.owned);drop(s,c.visited);drop(s,c.refs);return rc;
+    drop(s,c.owned);drop(s,c.visited);drop(s,c.refs);drop(s,c.reserved);return rc;
 }
 static int check_impl(void *v,uint32_t flags,uint64_t *errors)
 {
     if(!errors)return IFS_FS_INVALID;
     *errors=0;if(!live(v)||flags)return IFS_FS_INVALID;
     Session fresh;int rc=discover(&active.host,&fresh);
-    if(!rc){rc=check_native(&fresh);session_drop(&fresh);}
+    if(!rc){fresh.journal_owned=active.journal_owned;rc=check_native(&fresh);session_drop(&fresh);}
     if(rc==IFS_FS_CORRUPT){*errors=1;return IFS_FS_OK;}
     return rc;
 }

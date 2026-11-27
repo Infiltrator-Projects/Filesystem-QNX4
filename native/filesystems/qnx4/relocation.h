@@ -3,14 +3,14 @@
  * writes, preserving stable inode identities and deduplicating hard links.
  * Each relocation publishes one native inode and bitmap transaction. A
  * cold recovery may retain completed moves but never a half-moved file.
- * Growth policy is deliberately rejected until native reserve ownership
- * and consumption are implemented and independently qualified.
+ * Growth uses native QNX extent preallocation (QNX KB 9712): extra
+ * file-owned blocks beyond logical EOF, persistently occupied in bitmap.
  */
 typedef struct {
     Node original;
     uint64_t digest;
-    uint32_t target;
-    int move;
+    uint32_t target,reserve;
+    int move,reserve_only;
 } RelocFile;
 typedef struct {
     uintptr_t token;
@@ -102,21 +102,48 @@ static int reloc_choose(const uint8_t *bitmap,uint32_t count,uint32_t *first)
     }
     return IFS_FS_NO_SPACE;
 }
-static int reloc_simulate(RelocFile *f,uint8_t *bitmap)
+static int reloc_free(const uint8_t *bitmap,uint32_t start,uint32_t count)
+{
+    if(start>active.blocks||count>active.blocks-start)return 0;
+    for(uint32_t i=0;i<count;i++)if(bit(bitmap,start+i))return 0;
+    return 1;
+}
+static void reloc_sim_bits(uint8_t *bitmap,uint32_t start,uint32_t count,int used)
+{
+    for(uint32_t i=0;i<count;i++){
+        uint32_t b=start+i;uint8_t mask=(uint8_t)(1u<<(b%8u));
+        if(used)bitmap[b/8u]|=mask;else bitmap[b/8u]&=(uint8_t)~mask;
+    }
+}
+static int reloc_simulate(RelocFile *f,uint8_t *bitmap,uint32_t policy)
 {
     Map map;int rc=node_map(&active,&f->original,&map);if(rc)return rc;
     rc=reloc_digest(&f->original,&map,&f->digest);if(rc)goto done;
     uint32_t blocks=(uint32_t)(((uint64_t)size(&f->original)+BB-1u)/BB),dest=0;
-    int whole=reloc_contiguous(&map,blocks,&f->target);
-    /* Do not silently drop foreign/preallocated native extents. */
-    if(total_blocks(&map)!=blocks){rc=IFS_FS_UNSUPPORTED;goto done;}
+    uint64_t total=total_blocks(&map);
+    if(total<blocks||total>UINT32_MAX){rc=IFS_FS_CORRUPT;goto done;}
+    uint32_t allocated=(uint32_t)total;
+    int whole=reloc_contiguous(&map,allocated,&f->target);
     if(!blocks)goto done;
-    rc=reloc_choose(bitmap,blocks,&dest);
-    if(rc==IFS_FS_NO_SPACE&&whole){rc=0;goto done;}
+    /* Ordinary compaction retains existing file-owned preallocation. */
+    f->reserve=policy?(blocks+9u)/10u:allocated-blocks;
+    uint32_t wanted=blocks+f->reserve;
+    if(wanted<blocks){rc=IFS_FS_NO_SPACE;goto done;}
+    if(policy&&whole&&map.count==1u){
+        if(wanted==allocated)goto done;
+        if(wanted<allocated||reloc_free(bitmap,f->target+allocated,wanted-allocated)){
+            f->reserve_only=1;
+            if(wanted>allocated)reloc_sim_bits(bitmap,f->target+allocated,wanted-allocated,1);
+            else reloc_sim_bits(bitmap,f->target+wanted,allocated-wanted,0);
+            goto done;
+        }
+    }
+    rc=reloc_choose(bitmap,wanted,&dest);
+    if(rc==IFS_FS_NO_SPACE&&whole&&wanted==allocated){rc=0;goto done;}
     if(rc)goto done;
-    if(whole&&dest>=f->target)goto done;
+    if(whole&&wanted==allocated&&dest>=f->target)goto done;
     f->target=dest;f->move=1;
-    for(uint32_t i=0;i<blocks;i++)bitmap[(dest+i)/8u]|=(uint8_t)(1u<<((dest+i)%8u));
+    reloc_sim_bits(bitmap,dest,wanted,1);
     for(uint32_t i=0;i<map.count;i++)
         for(uint32_t j=0;j<map.run[i].count;j++){
             uint32_t b=map.run[i].first+j;bitmap[b/8u]&=(uint8_t)~(1u<<(b%8u));
@@ -135,7 +162,7 @@ static int reloc_plan_impl(void *v,const char *path,uint32_t policy,void **out)
     *out=NULL;
     if(!live(v)||!path)return IFS_FS_INVALID;
     if(!active.writable)return IFS_FS_ACCESS;
-    if(policy)return IFS_FS_UNSUPPORTED;
+    if(policy!=0u&&policy!=10u)return IFS_FS_UNSUPPORTED;
     if(active_plan)return IFS_FS_BUSY;
     if(reloc_generation==UINTPTR_MAX)return IFS_FS_NO_SPACE;
     int rc=check_native(&active);if(rc)return rc;
@@ -151,7 +178,7 @@ static int reloc_plan_impl(void *v,const char *path,uint32_t policy,void **out)
     memcpy(bitmap,active.bitmap,bitmap_bytes());
     rc=reloc_collect(p,seen,&e.node,0);
     if(!rc)for(size_t i=0;i<p->count;i++){
-        rc=reloc_simulate(&p->files[i],bitmap);if(rc)break;
+        rc=reloc_simulate(&p->files[i],bitmap,policy);if(rc)break;
     }
     drop(&active,seen);drop(&active,bitmap);
     if(rc){drop(&active,p->files);drop(&active,p);return rc;}
@@ -170,7 +197,7 @@ static int reloc_verify_file(const RelocFile *f)
     if(memcmp(expected,node.raw,REC))return IFS_FS_CORRUPT;
     Map map;rc=node_map(&active,&node,&map);if(rc)return rc;
     uint32_t start=0;uint64_t digest=0;
-    if(!reloc_contiguous(&map,(uint32_t)(((uint64_t)size(&node)+BB-1u)/BB),&start)||start!=f->target)
+    if(!reloc_contiguous(&map,(uint32_t)(((uint64_t)size(&node)+BB-1u)/BB)+f->reserve,&start)||start!=f->target)
         rc=IFS_FS_CORRUPT;
     if(!rc)rc=reloc_digest(&node,&map,&digest);
     if(!rc&&digest!=f->digest)rc=IFS_FS_CORRUPT;
@@ -188,15 +215,30 @@ static int relocate_one(void *v,const RelocFile *f)
     Mutation m;rc=mutation_begin(&m,v);
     if(rc){map_drop(&active,&old);return rc;}
     uint32_t blocks=(uint32_t)(((uint64_t)size(&node)+BB-1u)/BB);
-    Run run={f->target,blocks};Map next={.run=&run,.count=1};int direct=0;
-    if(!blocks||run.first<2u||run.first>=active.blocks||blocks>active.blocks-run.first){rc=IFS_FS_CORRUPT;goto done;}
-    for(uint32_t b=run.first;b<run.first+blocks;b++){
+    uint32_t wanted=blocks+f->reserve;
+    Run run={f->target,wanted};Map next={.run=&run,.count=1};int direct=0;
+    if(!blocks||wanted<blocks||run.first<2u||run.first>=active.blocks||wanted>active.blocks-run.first){rc=IFS_FS_CORRUPT;goto done;}
+    uint32_t begin=run.first,end=run.first+wanted;
+    if(f->reserve_only){
+        uint32_t old_count=(uint32_t)total_blocks(&old),start=0;
+        if(old.count!=1u||!reloc_contiguous(&old,old_count,&start)||start!=run.first){
+            rc=IFS_FS_CORRUPT;goto done;
+        }
+        if(wanted<old_count){
+            rc=release_run(&m,run.first+wanted,old_count-wanted);if(rc)goto done;
+            begin=end;
+        }else begin=run.first+old_count;
+    }
+    for(uint32_t b=begin;b<end;b++){
         if((b&4095u)==0&&cancelled(&active)){rc=IFS_FS_BUSY;goto done;}
         if(bit(active.bitmap,b)||bit(m.bitmap,b)){rc=IFS_FS_CORRUPT;goto done;}
         m.bitmap[b/8u]|=(uint8_t)(1u<<(b%8u));m.free-=BB;
     }
-    rc=write_new_run(&m,&old,size(&node),0,run,0,NULL,0,&direct);if(rc)goto done;
-    rc=release_node(&m,&node);if(rc)goto done;
+    if(f->move){
+        Run payload={run.first,blocks};
+        rc=write_new_run(&m,&old,size(&node),0,payload,0,NULL,0,&direct);if(rc)goto done;
+        rc=release_node(&m,&node);if(rc)goto done;
+    }
     rc=encode_runs(&m,&node,&next,size(&node));if(rc)goto done;
     if(direct){rc=jflush(&active.host);if(rc)goto done;}
     rc=mutation_commit(&m);
@@ -216,7 +258,7 @@ static int reloc_execute_impl(void *v,void *p,uint64_t *moved)
     while(q->next<q->count){
         if(cancelled(&active)){rc=IFS_FS_BUSY;break;}
         RelocFile *f=&q->files[q->next];
-        if(f->move){rc=relocate_one(v,f);if(rc)break;q->moved+=size(&f->original);}
+        if(f->move||f->reserve_only){rc=relocate_one(v,f);if(rc)break;if(f->move)q->moved+=size(&f->original);}
         rc=reloc_verify_file(f);if(rc){active.fault=1;break;}
         ++q->next;
     }

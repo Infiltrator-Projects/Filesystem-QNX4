@@ -146,6 +146,39 @@ static int encode_runs(Mutation *m,Node *node,const Map *map,uint32_t bytes)
 done:
     drop(&active,blocks);return rc;
 }
+/* Consume native preallocation without relocating the file. Fully aligned
+ * pages beyond old EOF can be written before publishing the new length:
+ * no prior payload is exposed or changed. Old-data and mixed pages are
+ * protected by the physical-page redo journal. The gap is zero-filled. */
+static int reserved_payload(Mutation *m,Node *node,const Map *old,uint64_t offset,
+                            const uint8_t *source,uint32_t length,uint32_t new_size,
+                            int truncating)
+{
+    uint64_t old_size=size(node),base=(uint64_t)old->run[0].first*BB;
+    uint64_t at=truncating?old_size:(offset<old_size?offset:old_size);
+    uint64_t end=truncating?new_size:offset+length;int direct=0;
+    while(at<end){
+        if(cancelled(&active))return IFS_FS_BUSY;
+        uint64_t physical=base+at;
+        uint32_t n=JUNIT-(uint32_t)(physical%JUNIT);
+        if(n>end-at)n=(uint32_t)(end-at);
+        uint8_t data[JUNIT]={0};
+        if(source&&offset<at+n&&offset+length>at){
+            uint64_t lo=offset>at?offset:at,hi=offset+length<at+n?offset+length:at+n;
+            memcpy(data+(size_t)(lo-at),source+(size_t)(lo-offset),(size_t)(hi-lo));
+        }
+        int rc;
+        if(n==JUNIT&&physical%JUNIT==0&&at>=old_size){
+            rc=jwrite(&active.host,physical,data);direct=1;
+        }else rc=tx_stage(&m->tx,physical,data,n);
+        if(rc)return rc;
+        at+=n;
+    }
+    put32(node->raw+16,new_size);
+    int rc=tx_stage(&m->tx,node->identity,node->raw,REC);if(rc)return rc;
+    if(direct){rc=jflush(&active.host);if(rc)return rc;}
+    return mutation_commit(m);
+}
 static int payload_impl(void *v,const char *path,uint64_t offset,
                         const void *source,uint32_t length,uint64_t resize,
                         int truncating)
@@ -166,6 +199,14 @@ static int payload_impl(void *v,const char *path,uint64_t offset,
     if((!truncating&&!length)||(truncating&&new_size==old_size)){rc=IFS_FS_OK;goto done;}
     rc=node_map(&active,&e.node,&old);if(rc)goto done;
     uint64_t old_count=total_blocks(&old),new_count=((uint64_t)new_size+BB-1u)/BB;
+    /* Small overwrites and streaming growth within the native contiguous
+     * preallocation preserve its start and consume only the needed blocks.
+     * Large overwrites of live data use the ordinary COW path instead. */
+    uint64_t logical_old=((uint64_t)old_size+BB-1u)/BB;
+    if(old.count==1u&&old_count>logical_old&&new_size>=old_size&&new_count<=old_count&&
+       (truncating||offset>=old_size||length<=128u*1024u)){
+        rc=reserved_payload(&m,&e.node,&old,offset,source,length,new_size,truncating);goto done;
+    }
     uint64_t first,last;
     if(truncating&&new_size<old_size){
         first=new_count;last=old_count;
