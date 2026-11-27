@@ -4,10 +4,11 @@
  * and long names use native link records. No shadow namespace.
  * This revision supports create of regular files and directories in
  * available native directory/inode slots, and transactionally removes or
- * renames native namespace records. Directory and inode-file extension
- * remain separate work.
+ * renames native namespace records, extending native directory and inode
+ * files in the same redo transaction as the new namespace record.
  */
-typedef struct {Tx tx;uint8_t *bitmap;uint64_t free;} Mutation;
+typedef struct {Tx tx;uint8_t *bitmap;uint64_t free;int refresh_metadata;} Mutation;
+static int extend_metadata(Mutation *m,Node *node,uint32_t *block);
 static size_t bitmap_bytes(void){return (size_t)(((uint64_t)active.blocks+7u)/8u);}
 static int mutation_begin(Mutation *m,void *v)
 {
@@ -38,6 +39,17 @@ static int mutation_commit(Mutation *m)
     if(rc){active.fault=1;return rc;}
     memcpy(active.bitmap,m->bitmap,bitmap_bytes());active.free=m->free;
     drop(&active,active.reserved);active.reserved=NULL;
+    if(m->refresh_metadata){
+        /* The root or inode-file descriptor changed, but existing native
+         * physical inode identities did not. Rebuild the session cache
+         * from the durable committed metadata, preserving the mount token. */
+        Session fresh;
+        rc=discover(&active.host,&fresh);
+        if(rc){active.fault=1;return rc;}
+        fresh.token=active.token;fresh.writable=active.writable;
+        fresh.journal_owned=active.journal_owned;fresh.recovered=active.recovered;
+        session_drop(&active);active=fresh;
+    }
     return IFS_FS_OK;
 }
 static int allocate_block(Mutation *m,uint32_t *block)
@@ -51,14 +63,16 @@ static int allocate_block(Mutation *m,uint32_t *block)
     }
     return IFS_FS_NO_SPACE;
 }
-static int allocate_inode(Node *n)
+static int allocate_inode(Mutation *m,Node *n)
 {
     for(uint64_t at=REC;at<size(&active.inodes);at+=REC){
         uint8_t raw[REC];int rc=map_read(&active,&active.inode_map,at,raw,REC);if(rc)return rc;
         if(raw[63]&(USED|INODE|LINK|BUSY))continue;
         *n=(Node){0};return map_address(&active.inode_map,at,&n->identity);
     }
-    return IFS_FS_NO_SPACE;
+    Node inode_file=active.inodes;uint32_t block=0;
+    int rc=extend_metadata(m,&inode_file,&block);if(rc)return rc;
+    *n=(Node){.identity=(uint64_t)block*BB};return IFS_FS_OK;
 }
 static int protected_name(const Node *parent,const char *name)
 {
@@ -96,6 +110,14 @@ static int directory_slot(const Node *parent,uint64_t *physical)
     }
     map_drop(&active,&map);return rc;
 }
+static int directory_slot_or_extend(Mutation *m,Node *parent,uint64_t *slot)
+{
+    int rc=directory_slot(parent,slot);
+    if(rc!=IFS_FS_NO_SPACE)return rc;
+    uint32_t block=0;rc=extend_metadata(m,parent,&block);
+    if(!rc)*slot=(uint64_t)block*BB;
+    return rc;
+}
 static int create_impl(void *v,const char *path,uint32_t type)
 {
     if(type!=IFS_FS_ENTRY_FILE&&type!=IFS_FS_ENTRY_DIRECTORY)return IFS_FS_UNSUPPORTED;
@@ -105,8 +127,8 @@ static int create_impl(void *v,const char *path,uint32_t type)
     Entry e;rc=directory_entry(&active,&parent,name,(uint32_t)strlen(name),0,&e);
     if(!rc){rc=IFS_FS_EXISTS;goto done;}
     if(rc!=IFS_FS_NOT_FOUND)goto done;
-    rc=directory_slot(&parent,&slot);if(rc)goto done;
-    rc=allocate_inode(&child);if(rc)goto done;
+    rc=directory_slot_or_extend(&m,&parent,&slot);if(rc)goto done;
+    rc=allocate_inode(&m,&child);if(rc)goto done;
     uint32_t block=0;
     if(type==IFS_FS_ENTRY_DIRECTORY){
         rc=allocate_block(&m,&block);if(rc)goto done;
@@ -236,7 +258,7 @@ static int rename_impl(void *v,const char *old_path,const char *new_path)
         if(moving&&!(raw[63]&LINK)){rc=IFS_FS_UNSUPPORTED;goto done;}
     }
     new_slot=old_slot;
-    if(moving){rc=directory_slot(&to,&new_slot);if(rc)goto done;}
+    if(moving){rc=directory_slot_or_extend(&m,&to,&new_slot);if(rc)goto done;}
     size_t width=(raw[63]&LINK)?48u:16u;
     if(strlen(new_name)>width){rc=IFS_FS_UNSUPPORTED;goto done;}
     memset(raw,0,width);memcpy(raw,new_name,strlen(new_name));

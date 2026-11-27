@@ -146,6 +146,30 @@ static int encode_runs(Mutation *m,Node *node,const Map *map,uint32_t bytes)
 done:
     drop(&active,blocks);return rc;
 }
+/* Extend a native metadata file by one zero-initialized block. Existing
+ * directory records and inode-file records remain at their physical
+ * addresses; no link reference is rewritten. Extent descriptors and the
+ * new namespace entry share one journal transaction. */
+static int extend_metadata(Mutation *m,Node *node,uint32_t *block)
+{
+    uint32_t bytes=size(node);
+    if((mode(node)!=DIR&&node->identity!=BB+REC)||bytes%BB||
+       bytes>UINT32_MAX-BB)return IFS_FS_UNSUPPORTED;
+    Map old={0};RunList next={0};int rc=node_map(&active,node,&old);if(rc)return rc;
+    if(total_blocks(&old)!=(uint64_t)bytes/BB){rc=IFS_FS_CORRUPT;goto done;}
+    for(uint32_t i=0;i<old.count;i++){
+        rc=append_run(&next,old.run[i].first,old.run[i].count);if(rc)goto done;
+    }
+    rc=allocate_block(m,block);if(rc)goto done;
+    uint8_t zero[BB]={0};
+    rc=tx_stage(&m->tx,(uint64_t)*block*BB,zero,BB);if(rc)goto done;
+    rc=append_run(&next,*block,1);if(rc)goto done;
+    rc=release_extensions(m,node);if(rc)goto done;
+    rc=encode_runs(m,node,&next.map,bytes+BB);
+    if(!rc&&(node->identity==BB||node->identity==BB+REC))m->refresh_metadata=1;
+done:
+    map_drop(&active,&old);map_drop(&active,&next.map);return rc;
+}
 /* Consume native preallocation without relocating the file. Fully aligned
  * pages beyond old EOF can be written before publishing the new length:
  * no prior payload is exposed or changed. Old-data and mixed pages are

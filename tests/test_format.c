@@ -200,7 +200,40 @@ int main(int argc,char **argv){
         assert(c->stat(vol,"/other",&e)==IFS_FS_NOT_FOUND);
         assert(v->check(vol,0,&errors)==0&&!errors);
         assert(c->unmount(vol)==0);
-        printf("QNX4 native format, journalled namespace and parent integrity PASS sector=%u\n",d.sector);
+        /* Grow root, nested directories and inode-file beyond their
+         * formatter sizes, retaining all preexisting link identities. */
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(c->create(vol,"/expanded",IFS_FS_ENTRY_DIRECTORY)==0);
+        char expanded[64];
+        for(unsigned i=0;i<150;i++){
+            assert(snprintf(expanded,sizeof expanded,"/expanded/file-%03u",i)>0);
+            assert(c->create(vol,expanded,IFS_FS_ENTRY_FILE)==0);
+            if(i%17u==0)assert(c->write(vol,expanded,0,&i,sizeof i)==0);
+        }
+        for(unsigned i=0;i<40;i++){
+            assert(snprintf(expanded,sizeof expanded,"/root-%03u",i)>0);
+            assert(c->create(vol,expanded,IFS_FS_ENTRY_FILE)==0);
+        }
+        assert(c->stat(vol,"/.inodes",&e)==0&&e.size_bytes>8192u);
+        assert(c->stat(vol,"/",&e)==0&&e.size_bytes>2048u);
+        assert(c->stat(vol,"/expanded",&e)==0&&e.size_bytes>512u);
+        assert(c->rename(vol,"/root-039","/expanded/moved")==0);
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0&&c->mount(&h,&vol,&info)==0);
+        for(unsigned i=0;i<150;i++){
+            assert(snprintf(expanded,sizeof expanded,"/expanded/file-%03u",i)>0);
+            assert(c->stat(vol,expanded,&e)==0);
+            if(i%17u==0){unsigned got_i=UINT32_MAX;assert(c->read(vol,expanded,0,&got_i,sizeof got_i)==0&&got_i==i);}
+            assert(c->remove(vol,expanded)==0);
+        }
+        assert(c->remove(vol,"/expanded/moved")==0&&c->remove(vol,"/expanded")==0);
+        for(unsigned i=0;i<39;i++){
+            assert(snprintf(expanded,sizeof expanded,"/root-%03u",i)>0);
+            assert(c->remove(vol,expanded)==0);
+        }
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0);
+        printf("QNX4 native format, journalled namespace, relocation and dynamic metadata PASS sector=%u\n",d.sector);
     }
     assert(close(d.fd)==0);dlclose(so);return 0;
 }
