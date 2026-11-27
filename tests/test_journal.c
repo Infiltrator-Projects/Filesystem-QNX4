@@ -42,6 +42,11 @@ static IfsFsHostRuntimeV2 host(Disk *d,int writable){
         .maximum_transfer_bytes=4096,.context=d,.read_at=rd,.write_at=writable?wr:NULL,
         .flush=writable?fl:NULL,.allocate=al,.release=fr};
 }
+static int namespace_change(const IfsFsCoreOpsV2 *c,void *vol,unsigned op){
+    if(op==0)return c->create(vol,"/new-directory",IFS_FS_ENTRY_DIRECTORY);
+    if(op==1)return c->rename(vol,"/source","/destination");
+    return c->remove(vol,"/source");
+}
 static void reset(Disk *d,const uint8_t *base){
     memcpy(d->media,base,SIZE);memcpy(d->durable,base,SIZE);
     d->events=d->cut=d->mode=0;d->dead=0;
@@ -54,7 +59,7 @@ int main(int argc,char **argv){
     const IfsFsCoreOpsV2 *c=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_CORE);
     const IfsFsVolumeOpsV2 *v=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_VOLUME);
     const IfsFsDefragOpsV2 *m=(const void*)ifs_fs_group_v2(api,IFS_FS_GROUP_DEFRAG);
-    assert(c->create && m->recover && v->sync);
+    assert(c->create && c->rename && c->remove && m->recover && v->sync);
     Disk d={.media=calloc(1,SIZE),.durable=calloc(1,SIZE)};
     uint8_t *base=malloc(SIZE);assert(d.media&&d.durable&&base);
     for(d.sector=512;d.sector<=4096;d.sector*=8){
@@ -65,12 +70,17 @@ int main(int argc,char **argv){
         assert(c->mount(&h,&vol,&info)==0);
         assert(c->create(vol,"/guard",IFS_FS_ENTRY_FILE)==0);
         assert(c->unmount(vol)==0);
-        memcpy(base,d.durable,SIZE);reset(&d,base);
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(c->create(vol,"/source",IFS_FS_ENTRY_DIRECTORY)==0);
+        assert(c->unmount(vol)==0);
+        memcpy(base,d.durable,SIZE);
+        for(unsigned op=0;op<3;op++){
+        reset(&d,base);
         assert(c->mount(&h,&vol,&info)==0);
         uint64_t before=info.free_bytes;
         assert(c->create(vol,"/guard",IFS_FS_ENTRY_FILE)==IFS_FS_EXISTS && !d.events);
-        assert(c->create(vol,"/new-directory",IFS_FS_ENTRY_DIRECTORY)==0);
-        assert(v->query(vol,&info)==0);uint64_t after=info.free_bytes;assert(before>after);
+        assert(namespace_change(c,vol,op)==0);
+        assert(v->query(vol,&info)==0);uint64_t after=info.free_bytes;assert(op==0?before>after:op==1?before==after:before<after);
         unsigned cuts=d.events;assert(cuts>=8);
         assert(c->unmount(vol)==0);
         unsigned recovered=0;
@@ -78,7 +88,7 @@ int main(int argc,char **argv){
             reset(&d,base);
             assert(c->mount(&h,&vol,&info)==0);
             d.cut=cut;d.mode=mode;
-            assert(c->create(vol,"/new-directory",IFS_FS_ENTRY_DIRECTORY)!=IFS_FS_OK && d.dead);
+            assert(namespace_change(c,vol,op)!=IFS_FS_OK && d.dead);
             assert(c->unmount(vol)==0);
             /* Discard volatile writes. Reopen through the public ABI. */
             memcpy(d.media,d.durable,SIZE);d.cut=0;d.dead=0;d.events=0;
@@ -94,16 +104,20 @@ int main(int argc,char **argv){
             assert(m->recover(vol,0,&repairs)==0 && !repairs);
             char name[64];IfsFsEntryV2 e={.structure_bytes=sizeof e,.name=name,.name_capacity=sizeof name};
             assert(c->stat(vol,"/guard",&e)==0&&!e.size_bytes);
-            int state=c->stat(vol,"/new-directory",&e);
+            const char *target=op==0?"/new-directory":op==1?"/destination":"/source";
+            int state=c->stat(vol,target,&e);
             assert(state==IFS_FS_OK||state==IFS_FS_NOT_FOUND);
-            if(!state)assert(c->directory_entry(vol,"/new-directory",0,&e)==IFS_FS_END);
+            if(!state)assert(c->directory_entry(vol,target,0,&e)==IFS_FS_END);
+            if(op==1)assert(c->stat(vol,"/source",&e)==(state==IFS_FS_OK?IFS_FS_NOT_FOUND:IFS_FS_OK));
             assert(v->query(vol,&info)==0);
-            assert(info.free_bytes==(state==IFS_FS_OK?after:before));
+            int committed=op==2?state==IFS_FS_NOT_FOUND:state==IFS_FS_OK;
+            assert(info.free_bytes==(committed?after:before));
             assert(v->check(vol,0,&errors)==0&&!errors);
             assert(c->unmount(vol)==0);
         }
         assert(recovered);
-        printf("QNX4 create journal interruption PASS sector=%u cases=%u recovered=%u\n",d.sector,cuts*3u,recovered);
+        printf("QNX4 namespace journal interruption PASS op=%u sector=%u cases=%u recovered=%u\n",op,d.sector,cuts*3u,recovered);
+        }
     }
     free(base);free(d.media);free(d.durable);dlclose(so);return 0;
 }

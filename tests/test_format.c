@@ -98,7 +98,28 @@ int main(int argc,char **argv){
         assert(c->mount(&h,&vol,&info)==0);
         assert(v->check(vol,0,&errors)==0&&!errors);
         assert(c->unmount(vol)==0);
-        printf("QNX4 native format, journalled creation and parent integrity PASS sector=%u\n",d.sector);
+        assert(c->mount(&h,&vol,&info)==0);
+        uint64_t free_before=info.free_bytes;
+        assert(c->create(vol,"/other",IFS_FS_ENTRY_DIRECTORY)==0);
+        assert(c->rename(vol,"/folder","/folder/sub")==IFS_FS_INVALID);
+        assert(c->remove(vol,"/folder")==IFS_FS_BUSY);
+        assert(c->rename(vol,"/folder","/other/moved")==0);
+        assert(c->stat(vol,"/folder",&e)==IFS_FS_NOT_FOUND);
+        assert(c->stat(vol,"/other/moved/native-long-file-name.bin",&e)==0);
+        assert(c->rename(vol,"/other/moved/native-long-file-name.bin","/other/file")==0);
+        assert(c->rename(vol,"/other/file","/other/moved")==IFS_FS_EXISTS);
+        assert(c->remove(vol,"/other/moved")==0);
+        assert(c->remove(vol,"/other/file")==0);
+        assert(c->remove(vol,"/other")==0);
+        assert(c->remove(vol,"/.ifs-journal")==IFS_FS_ACCESS);
+        assert(v->query(vol,&info)==0&&info.free_bytes==free_before+512u);
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0);
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(c->stat(vol,"/other",&e)==IFS_FS_NOT_FOUND);
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0);
+        printf("QNX4 native format, journalled namespace and parent integrity PASS sector=%u\n",d.sector);
     }
     assert(close(d.fd)==0);dlclose(so);return 0;
 }
