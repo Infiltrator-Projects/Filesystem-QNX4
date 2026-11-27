@@ -2,27 +2,27 @@
 
 ## 1. Purpose and format scope
 
-QNX 4 filesystem, distinct from the QNX 6 Power-Safe format. This repository is the designated independent implementation home for InfiltratorOS. **Documentation and migration scaffold only: no independent runtime provider or release is present.**
+QNX 4 filesystem, distinct from the QNX 6 Power-Safe format. This repository is the designated independent implementation home for InfiltratorOS. **Independent hosted native Common V2 implementation exists; release qualification remains incomplete.**
 
 ## 2. On-disk architecture and invariants
 
-Superblock geometry, inode and directory records, allocation bitmaps and extent chains determine native file ownership. Validate record references and the entire extent chain within the partition. These are design requirements for the native implementation, not claims about code already present in this repository.
+Superblock geometry, inode and directory records, allocation bitmaps and extent chains determine native file ownership. Validate record references and the entire extent chain within the partition. The hosted native provider implements these structures and checks their ownership.
 
 ## 3. Common V2 implementation and capabilities
 
-No local Common V2 implementation or advertised operation set has yet been qualified. The target entry point is `infiltrator_filesystem_api_v2`, using bounded, partition-relative host I/O. Implement native probe first, then mount, stat, enumeration, read and volume query where applicable. Consumers must negotiate supported groups and profiles; an unsupported operation must not report success or delegate to a private driver.
+The hosted implementation is exposed through `infiltrator_filesystem_api_v2`, using bounded, partition-relative host I/O. Native probe, mount, stat, enumeration, read, volume query, formatting, allocation mapping and journalled namespace and payload mutations are implemented. Consumers must negotiate supported groups and profiles; an unsupported operation must not report success or delegate to a private driver.
 
 ## 4. Integrity, mutation, allocation and recovery
 
-Mutation, formatting, check/repair and DEFRAG map/plan/execute/verify/recover require format-specific allocation and ordering invariants, exclusive writable host access and demonstrated interruption recovery. Until qualified, reject them before writing. Preserve native disk semantics and do not add a kernel or FUSE fallback as an alternative filesystem authority.
+Mutation, formatting, check/repair and DEFRAG map/plan/execute/verify/recover require format-specific allocation and ordering invariants, exclusive writable host access and demonstrated interruption recovery. Unsupported operations, including relocation and growth reservation, must be rejected before writing. Preserve native disk semantics and do not add a kernel or FUSE fallback as an alternative filesystem authority.
 
 ## 5. Build, installation and release
 
-The target installation is `/System/Filesystems/QNX4.so` and `/System/Resources/Documentation/Filesystem-QNX4.pdf`. Neither file is currently distributed by this repository. Once the implementation qualifies, the intended release is a portable amd64 DEB and CPU-native source-first RUN, with GitHub's automatic source archive. No install or build command is advertised before an executable build exists.
+The target installation is `/System/Filesystems/QNX4.so` and `/System/Resources/Documentation/Filesystem-QNX4.pdf`. Neither file is currently distributed by this repository. Once the implementation qualifies, the intended release is a portable amd64 DEB and CPU-native source-first RUN, with GitHub's automatic source archive. The source can be built and tested using the repository Makefile with the pinned Common dependency; no production installation is qualified.
 
 ## 6. Qualification and limitations
 
-Independent QNX4 media, invalid inode pointers, malformed extents and allocation contradictions. Compare independent payloads and unchanged-image hashes; inject truncation, corruption and I/O faults. Establish exact-revision ABI, hosted and import-free freestanding qualification, then independently test BOOT and kernel integration. No local build, runtime or packaging qualification is claimed.
+Independent QNX4 media, invalid inode pointers, malformed extents and allocation contradictions. Compare independent payloads and unchanged-image hashes; inject truncation, corruption and I/O faults. Establish exact-revision ABI, hosted and import-free freestanding qualification, then independently test BOOT and kernel integration. Hosted synthetic-image build, runtime and journal interruption tests have passed; independent foreign-media, freestanding, packaging and consumer qualification remain outstanding.
 
 ## 7. Technical references and provenance
 
@@ -46,3 +46,7 @@ Version 0.1.1 adds the native nonbootable format and Common V2 format profile, r
 Version 0.1.2 adds an independent whole-volume check: reconcile all visited file and directory extents (including extent blocks), inode-file link reference counts, duplicate directory names and bitmap ownership. It is diagnostic only and never modifies a mounted image. Native mutations and durable recovery are still absent.
 
 Version 0.1.4 introduces a native allocated journal-owner file and durable physical-page redo transactions, with writable mounts restricted to this provider-formatted profile. Native regular-file and directory creation use real inode-file link records and actual allocation. Existing directory/inode-file capacity is bounded; payload writes, dynamic expansion, removal/rename and interruption qualification are still outstanding.
+
+## Development implementation 0.1.8
+
+Versions 0.1.6–0.1.8 validate actual parent backlinks, implement native journalled rename/move and removal, and support transactional copy-on-write payload writes and truncation, including zero-filled extension. Existing unchanged extents are preserved; direct prepublication writes are restricted to wholly unallocated physical pages. Mixed pages and inode/bitmap changes use the redo transaction. Existing directory and inode-file capacity remains bounded. Foreign writable mounts, relocation, persistent growth reservations and full consumer qualification are not implemented or qualified. The exact [0.1.8 implementation CI run](https://github.com/Infiltrator-Projects/Filesystem-QNX4/actions/runs/45927194924) passed normal and sanitizer builds, including 270 journal interruption cases per build across 512- and 4096-byte sector sizes. This is synthetic-image evidence, not independent interoperability or package qualification.

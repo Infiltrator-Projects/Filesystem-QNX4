@@ -2,7 +2,7 @@
 
 ## Source and ownership
 
-[Exact central source baseline](https://github.com/Infiltrator-Projects/Filesystems/tree/101026021d9088d80b7f0f472d9061f0e2c688a3/native/filesystems/qnx4). Editable Linux v6.12.107-derived source remains centrally. Extract and adapt the existing implementation; preserve original licensing, attribution and provenance. New project-authored code uses GPL-3.0-or-later. No source transferred by this documentation commit.
+[Exact central source baseline](https://github.com/Infiltrator-Projects/Filesystems/tree/101026021d9088d80b7f0f472d9061f0e2c688a3/native/filesystems/qnx4). Editable Linux v6.12.107-derived source remains centrally. Extract and adapt the existing implementation; preserve original licensing, attribution and provenance. New project-authored code uses GPL-3.0-or-later. The independent project-authored native implementation now resides in this repository.
 
 ## Qualification plan
 
@@ -12,6 +12,6 @@
 4. Implement mutation, format, check/repair and DEFRAG map/plan/execute/verify/recover only with proven allocation, durability and interruption/recovery semantics. Unsupported operations must refuse before writing.
 5. Qualify exact packaged Common V2 ABI, hosted and import-free freestanding profiles, then actual BOOT and kernel integration independently.
 
-All independent stages, PDF manual and packaging are pending. No runtime capability is claimed.
+Hosted native development has passed the exact-revision [v0.1.8 CI run](https://github.com/Infiltrator-Projects/Filesystem-QNX4/actions/runs/45927194924), including native format/read, integrity checks, journalled create/rename/remove/write/truncate and 270 interruption cases per build across both sector sizes. Dynamic directory and inode-file expansion, native relocation, persistent growth reservation, independent foreign-media interoperability, freestanding and consumer testing, operational PDF manual updates and packaging remain pending. No production release is qualified.
 
 The [design and qualification reference](docs/QNX4.pdf) is available. It is not an operational manual; release and installation qualification remain pending.
