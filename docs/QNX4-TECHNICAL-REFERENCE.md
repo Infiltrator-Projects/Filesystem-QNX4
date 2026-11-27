@@ -8,6 +8,8 @@ QNX 4 uses an extent-based disk format designed for a real-time operating system
 
 The logical format uses 512-byte blocks regardless of host transfer geometry. On disk block addresses start at one; block b corresponds to partition-relative byte offset (b-1)*512. Zero is therefore not the first valid extent address. Physical block zero is the loader, physical block one the root block; the bitmap follows, then the root directory and remaining allocations. If the volume contains N complete 512-byte blocks, the bitmap needs ceil(N/4096) blocks. Check the root block's directory/inode records and special-file references independently. Host sector alignment must be handled by bounded byte I/O; never reinterpret a 4 KiB host block as one QNX4 block.
 
+The Linux VFS QNX4_SUPER_MAGIC value is not proof of a unique on-disk signature. Admit the disk only after validating actual root, bitmap and extent structures. QNX6's alternate-root publication must not be assumed.
+
 ## Root and reserved metadata
 
 The root block contains records describing the root directory, inode file, primary boot image and alternate boot image. The root directory contains dot and dot-dot links, .bitmap, .inodes, .boot and .altboot. The bitmap is itself represented as a read-only file. The .inodes file begins with a reserved identifying record. Validate the root's self-reference, parent, special-file extents and bitmap size before any general directory traversal. The QNX4_SUPER_MAGIC used by operating-system drivers is not necessarily a unique signature stored at a particular disk offset.
@@ -44,8 +46,14 @@ Growth may extend the final extent in adjacent free space, or allocate a new run
 
 Native chkfsys traverses the directory graph and compares a reconstructed bitmap against on-disk allocation. Recovery is not synonymous with a clean mount. Preserve an original immutable image, enumerate errors with physical offsets, and classify uncertain records rather than silently patching them. Orphaned extension blocks can provide evidence because they contain a redundant initial extent; their content is not proof of current ownership. Deleted files may be recoverable only when directory metadata and blocks remain unmodified. Recovered names and payloads should carry provenance and confidence; do not write recovered allocations onto the source by default. Defrag must validate destination ownership, payload equivalence and all metadata references before releasing the source run.
 
+## Implementation and qualification boundary
+
+The independent provider uses Common V2: https://github.com/Infiltrator-Projects/Libraries/blob/main/docs/FILESYSTEM_COMMON_ABI_V2.md . Negotiate actual operation masks and media profiles. Distinguish unsupported, corrupt, I/O and stale-handle results. Require bounded host I/O, exclusive unmounted ownership and durable flush before mutation. Test Media and Defragmenter consume the same engine, not separate format parsers. Hosted and freestanding binaries, relocation, recovery, BOOT, kernel integration and packages require separate exact-source evidence. Current support belongs to the repository README and qualification records. The intended package paths are /System/Filesystems/ and /System/Resources/Documentation/; the reference is not an installation or release-status claim.
+
 ## Independent implementation tests and references
 
 Use a QNX-native dinit image and compare bytes and metadata with an independent reader. Fixtures: short and full-width names, long link records, hard-link aliases, 0/1/60/61 extension entries, truncated root, invalid slot 8, last-volume block, overlapping extents, corrupt reverse pointer, inconsistent counts, bitmap padding, busy files and injected read/write/flush failures. Source: QNX 4 User Guide, Overview of QNX disk structure, https://www.qnx.com/developers/docs/qnx_4.25_docs/qnx4/user_guide/recovery.html . Binary layout cross-check: https://codebrowser.dev/linux/linux/include/uapi/linux/qnx4_fs.h.html ; address mapping: https://github.com/torvalds/linux/tree/v6.12/fs/qnx4 . Exact original write ordering, all legacy flags and timestamp edge cases require native-reference verification. Historical design status is in the following appendices; this reference does not establish runtime qualification.
 
-The PDF also preserves both older documents as explicitly historical appendices.
+The retained reader resolves raw inode entries, root directory and extended extent blocks; validate link and extent cycles against real QNX4 media.
+
+Retained source: https://github.com/Infiltrator-Projects/Filesystems/blob/101026021d9088d80b7f0f472d9061f0e2c688a3/native/filesystems/qnx4/linux/inode.c (blob e399e2dd3a).
