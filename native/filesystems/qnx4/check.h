@@ -27,7 +27,7 @@ static int inode_index(const Session *s,uint64_t physical,uint32_t *index)
     }
     return IFS_FS_CORRUPT;
 }
-static int check_walk(Check *c,const Node *node,unsigned depth)
+static int check_walk(Check *c,const Node *node,uint64_t parent_identity,unsigned depth)
 {
     Session *s=c->s;
     if(depth>256u)return IFS_FS_UNSUPPORTED;
@@ -60,7 +60,13 @@ static int check_walk(Check *c,const Node *node,unsigned depth)
             if(name_is(p,48,".")){
                 if(dot++||at!=0||((uint64_t)le32(p+48)-1u)*BB+p[52]*REC!=node->identity)
                     {rc=IFS_FS_CORRUPT;break;}
-            }else if(up++||at!=REC){rc=IFS_FS_CORRUPT;break;}
+            }else if(up++||at!=REC||
+                ((uint64_t)le32(p+48)-1u)*BB+p[52]*REC!=parent_identity){
+                /* A syntactically valid backlink can still point at an unrelated
+                 * inode. Require the actual traversal parent before allowing
+                 * a writable mount; root is its own parent. */
+                rc=IFS_FS_CORRUPT;break;
+            }
             rc=0;continue;
         }
         if(rc)break;
@@ -79,7 +85,7 @@ static int check_walk(Check *c,const Node *node,unsigned depth)
         }else if(!(p[63]&LINK)&&mode(&e.node)!=DIR&&le16(e.node.raw+56)!=1u){
             rc=IFS_FS_CORRUPT;break;
         }
-        rc=check_walk(c,&e.node,depth+1);if(rc)break;
+        rc=check_walk(c,&e.node,node->identity,depth+1);if(rc)break;
     }
     if(!rc&&(dot!=1u||up!=1u))rc=IFS_FS_CORRUPT;
     if(!rc&&count>1u){
@@ -102,8 +108,8 @@ static int check_native(Session *s)
     memset(c.owned,0,n);memset(c.visited,0,s->blocks);
     memset(c.refs,0,(size_t)c.inode_slots*sizeof(*c.refs));
     c.owned[0]=3u;
-    rc=check_walk(&c,&s->inodes,0);if(rc)goto done;
-    rc=check_walk(&c,&s->root,0);if(rc)goto done;
+    rc=check_walk(&c,&s->inodes,s->inodes.identity,0);if(rc)goto done;
+    rc=check_walk(&c,&s->root,s->root.identity,0);if(rc)goto done;
     for(uint32_t i=1;i<c.inode_slots;i++){
         if(cancelled(s)){rc=IFS_FS_BUSY;goto done;}
         uint8_t raw[REC];rc=map_read(s,&s->inode_map,(uint64_t)i*REC,raw,REC);if(rc)goto done;

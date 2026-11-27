@@ -77,7 +77,28 @@ int main(int argc,char **argv){
         assert(c->stat(vol,"/folder/native-long-file-name.bin",&e)==0&&!e.size_bytes);
         assert(c->stat(vol,"/.ifs-journal",&e)==IFS_FS_NOT_FOUND);
         assert(c->unmount(vol)==0);
-        printf("QNX4 native format and journalled creation PASS sector=%u\n",d.sector);
+        /* Corrupt only the directory's native parent backlink, leaving the
+         * bitmap, inode and journal untouched. A read-only mount permits
+         * diagnosis; integrity checking and writable mount must reject it. */
+        uint8_t link[64], child[64], old_parent[5], bad_parent[5]={2,0,0,0,1};
+        assert(pread(d.fd,link,sizeof link,(off_t)first*512+7*64)==(ssize_t)sizeof link);
+        assert(!memcmp(link,"folder",6));
+        off_t child_at=(off_t)(le32(link+48)-1u)*512+link[52]*64;
+        assert(pread(d.fd,child,sizeof child,child_at)==(ssize_t)sizeof child);
+        off_t parent_at=(off_t)(le32(child+20)-1u)*512+64+48;
+        assert(pread(d.fd,old_parent,sizeof old_parent,parent_at)==(ssize_t)sizeof old_parent);
+        assert(pwrite(d.fd,bad_parent,sizeof bad_parent,parent_at)==(ssize_t)sizeof bad_parent);
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(v->check(vol,0,&errors)==0&&errors);
+        assert(c->unmount(vol)==0);
+        h.capabilities=IFS_FS_HOST_EXCLUSIVE|IFS_FS_HOST_DURABLE;h.write_at=wr;h.flush=fl;
+        before=d.writes;
+        assert(c->mount(&h,&vol,&info)==IFS_FS_CORRUPT&&!vol&&d.writes==before);
+        assert(pwrite(d.fd,old_parent,sizeof old_parent,parent_at)==(ssize_t)sizeof old_parent);
+        assert(c->mount(&h,&vol,&info)==0);
+        assert(v->check(vol,0,&errors)==0&&!errors);
+        assert(c->unmount(vol)==0);
+        printf("QNX4 native format, journalled creation and parent integrity PASS sector=%u\n",d.sector);
     }
     assert(close(d.fd)==0);dlclose(so);return 0;
 }
