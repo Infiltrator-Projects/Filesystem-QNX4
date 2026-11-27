@@ -220,21 +220,22 @@ BT /F2 22 Tf 43 784 Td (QNX4 - technical reference) Tj ET
 BT /F2 22 Tf 43 784 Td (QNX4 - technical reference) Tj ET
 0.08 0.14 0.20 rg BT /F2 15 Tf 43 736 Td (13. Independent implementation tests and references) Tj ET
 0.08 0.14 0.20 rg BT /F3 10 Tf 43 706 Td (Use a QNX-native dinit image and compare bytes and metadata with an independent) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 692 Td (reader. Fixtures: short and full-width names, long link records, hard-link aliases,) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 678 Td (0/1/60/61 extension entries, truncated root, invalid slot 8, last-volume block,) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 664 Td (overlapping extents, corrupt reverse pointer, inconsistent counts, bitmap padding,) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 650 Td (busy files and injected read/write/flush failures. Source: QNX 4 User Guide,) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 636 Td (Overview of QNX disk structure,) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 622 Td (https://www.qnx.com/developers/docs/qnx_4.25_docs/qnx4/user_guide/recovery.html .) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 608 Td (Binary layout cross-check:) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 692 Td (reader. Fixtures: short and full-width names, long link records, hard-link) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 678 Td (aliases, 0/1/60/61 extension entries, truncated root, invalid slot 8,) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 664 Td (last-volume block, overlapping extents, corrupt reverse pointer, inconsistent) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 650 Td (counts, bitmap padding, busy files and injected read/write/flush failures.) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 636 Td (Source: QNX 4 User Guide, Overview of QNX disk structure,) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 622 Td (https://www.qnx.com/developers/docs/qnx_4.25_docs/qnx4/user_guide/recovery.html) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 608 Td (. Binary layout cross-check:) Tj ET
 0.08 0.14 0.20 rg BT /F3 10 Tf 43 594 Td (https://codebrowser.dev/linux/linux/include/uapi/linux/qnx4_fs.h.html ; address) Tj ET
 0.08 0.14 0.20 rg BT /F3 10 Tf 43 580 Td (mapping: https://github.com/torvalds/linux/tree/v6.12/fs/qnx4 . Exact original) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 566 Td (write ordering, all legacy flags and timestamp edge cases require native-reference) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 552 Td (verification. Historical design status is in the following appendices; this) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 538 Td (reference does not establish runtime qualification.) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 514 Td (The retained reader resolves raw inode entries, root directory and extended extent) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 500 Td (blocks; validate link and extent cycles against real QNX4 media.) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 476 Td (Retained source:) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 462 Td (https://github.com/Infiltrator-Projects/Filesystems/blob/101026021d9088d80b7f0f472d) Tj ET
-0.08 0.14 0.20 rg BT /F3 10 Tf 43 448 Td (9061f0e2c688a3/native/filesystems/qnx4/linux/inode.c \(blob e399e2dd3a\).) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 566 Td (write ordering, all legacy flags and timestamp edge cases require) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 552 Td (native-reference verification. Historical design status is identified in) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 538 Td (Implementation and qualification boundary; this reference does not establish) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 524 Td (runtime qualification.) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 500 Td (The retained reader resolves raw inode entries, root directory and extended) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 486 Td (extent blocks; validate link and extent cycles against real QNX4 media.) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 462 Td (Retained source:) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 448 Td (https://github.com/Infiltrator-Projects/Filesystems/blob/101026021d9088d80b7f0f) Tj ET
+0.08 0.14 0.20 rg BT /F3 10 Tf 43 434 Td (472d9061f0e2c688a3/native/filesystems/qnx4/linux/inode.c \(blob e399e2dd3a\).) Tj ET
 0.2 0.3 0.4 rg BT /F1 9 Tf 43 32 Td (Historical development and engineering reference | 14) Tj ET
